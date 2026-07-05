@@ -9,7 +9,7 @@ env:
   MMS_DIR: metamod-source-a5f4cca5824c0c5f13e8fa100dd15df164d2db22
   MMS_COMMIT: a5f4cca5824c0c5f13e8fa100dd15df164d2db22
   HL2SDK_COMMIT: 9ab16fa9fcdeeb30565dfdbf6fbb312356978a0b
-  AMBUILD_REF: "2.2"
+  AMBUILD_COMMIT: d89ec91a7ac2607da07b50bb62346f9a10e9a998
   VRF_VERSION: "19.2"
 
 jobs:
@@ -26,13 +26,12 @@ jobs:
         with:
           arch: x64
 
-      - name: Install AMBuild
-        run: python -m pip install git+https://github.com/alliedmodders/ambuild.git@${{ env.AMBUILD_REF }}
-
       - name: Fetch build references
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force ..\references | Out-Null
+          git clone --depth 1 https://github.com/alliedmodders/ambuild.git ..\references\ambuild
+          git -C ..\references\ambuild checkout ${{ env.AMBUILD_COMMIT }}
           git clone https://github.com/alliedmodders/metamod-source.git ..\references\${{ env.MMS_DIR }}
           git -C ..\references\${{ env.MMS_DIR }} checkout ${{ env.MMS_COMMIT }}
           git clone --branch cs2 https://github.com/alliedmodders/hl2sdk.git ..\references\hl2sdk-cs2
@@ -53,10 +52,11 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
+          $env:PYTHONPATH = (Resolve-Path ..\references\ambuild).Path
           New-Item -ItemType Directory -Force build | Out-Null
           Push-Location build
           python ..\configure.py
-          ambuild
+          python -c "from ambuild2.run import cli_run; cli_run()"
           Pop-Location
 
       - name: Test
@@ -85,11 +85,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y g++ unzip
-          python -m pip install git+https://github.com/alliedmodders/ambuild.git@${AMBUILD_REF}
 
       - name: Fetch build references
         run: |
           mkdir -p ../references
+          git clone --depth 1 https://github.com/alliedmodders/ambuild.git ../references/ambuild
+          git -C ../references/ambuild checkout ${AMBUILD_COMMIT}
           git clone https://github.com/alliedmodders/metamod-source.git ../references/${MMS_DIR}
           git -C ../references/${MMS_DIR} checkout ${MMS_COMMIT}
           git clone --branch cs2 https://github.com/alliedmodders/hl2sdk.git ../references/hl2sdk-cs2
@@ -108,10 +109,11 @@ jobs:
 
       - name: Build
         run: |
+          export PYTHONPATH="$(pwd)/../references/ambuild"
           mkdir -p build-linux
           cd build-linux
           python ../configure.py
-          ambuild
+          python -c "from ambuild2.run import cli_run; cli_run()"
 
       - name: Test
         run: ./build-linux/cs2fow_tests/linux-x86_64/cs2fow_tests
