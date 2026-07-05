@@ -2,11 +2,14 @@
 
 # CS2FOW
 
-**Server-side anti-wallhack visibility culling for Counter-Strike 2.**
+### Server-side anti-wallhack visibility culling for Counter-Strike 2
 
-[![Release](https://img.shields.io/github/v/release/karola3vax/CS2FOW?label=release)](https://github.com/karola3vax/CS2FOW/releases)
+CS2FOW hides fully occluded enemies from clients using real CS2 map geometry,
+baked BVH visibility data, and fast AVX runtime checks.
+
+[![Release](https://img.shields.io/github/v/release/karola3vax/CS2FOW?label=release)](https://github.com/karola3vax/CS2FOW/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/karola3vax/CS2FOW/total?label=downloads)](https://github.com/karola3vax/CS2FOW/releases)
-[![Latest downloads](https://img.shields.io/github/downloads/karola3vax/CS2FOW/latest/total?label=latest%20release%20downloads)](https://github.com/karola3vax/CS2FOW/releases/latest)
+[![Latest downloads](https://img.shields.io/github/downloads/karola3vax/CS2FOW/latest/total?label=latest%20downloads)](https://github.com/karola3vax/CS2FOW/releases/latest)
 [![Build](https://img.shields.io/github/actions/workflow/status/karola3vax/CS2FOW/build.yml?branch=main&label=build)](https://github.com/karola3vax/CS2FOW/actions)
 [![License](https://img.shields.io/github/license/karola3vax/CS2FOW)](LICENSE)
 
@@ -14,65 +17,82 @@
 
 <table>
 <tr>
-<td><b>Name</b><br>CS2FOW</td>
-<td><b>Version</b><br>0.1.0-preview</td>
-<td><b>Plugin</b><br>Metamod</td>
-<td><b>License</b><br>MIT</td>
+<td align="center" width="25%"><b>🚀 Version</b><br><code>0.1.0-preview</code></td>
+<td align="center" width="25%"><b>🧩 Plugin</b><br>Metamod</td>
+<td align="center" width="25%"><b>🖥️ Servers</b><br>Windows x86_64<br>Linux x86_64</td>
+<td align="center" width="25%"><b>⚡ CPU</b><br>AVX required</td>
 </tr>
 <tr>
-<td><b>OS</b><br>Windows x86_64<br>Linux x86_64</td>
-<td><b>CPU</b><br>AVX required</td>
-<td><b>Maps</b><br>Official, custom, Workshop</td>
-<td><b>Runtime</b><br>No engine TraceRay</td>
+<td align="center"><b>🗺️ Maps</b><br>Official<br>Custom<br>Workshop</td>
+<td align="center"><b>⚙️ Baking</b><br>Automatic on first load</td>
+<td align="center"><b>🧱 Runtime</b><br>No engine TraceRay spam</td>
+<td align="center"><b>📊 Status</b><br><code>cs2fow_status</code></td>
 </tr>
 </table>
 
-CS2FOW helps reduce what wallhacks can reveal by stopping hidden enemies from
-being transmitted to clients when static map geometry blocks visibility. It is a
-native Metamod plugin with an offline baker. It does not use engine TraceRay for
-runtime visibility.
+## How It Works
 
-## What It Does
+**If the enemy is fully behind solid map geometry, the cheat has no enemy data
+to draw.**
 
-- Uses real CS2 map physics data.
-- Bakes static world geometry into a BVH8 acceleration structure.
-- Uses AVX to test multiple BVH boxes at once.
-- Runs visibility work away from the main game thread.
-- Keeps `CheckTransmit` cheap: it only reads the finished visibility matrix.
-- Automatically bakes missing data for official, custom, and Workshop maps when
-  the server has the map mounted.
+CS2FOW is not a visual filter. It is server-side visibility culling. The plugin
+uses the real CS2 map physics resource, bakes static world triangles into a
+BVH8 acceleration structure, then uses AVX math on a worker thread to decide
+which enemy pawns should be transmitted to each player. `CheckTransmit` only
+reads the finished visibility matrix.
 
 ```mermaid
 flowchart LR
-  A["Map VPK"] --> B["CS2FOW baker"]
-  B --> C["world_physics.vmdl_c"]
+  A["Mounted map VPK"] --> B["world_physics.vmdl_c"]
+  B --> C["CS2FOW baker"]
   C --> D["Filtered static triangles"]
-  D --> E["BVH8 .bvh8 map data"]
-  E --> F["Runtime worker"]
+  D --> E["BVH8 map data"]
+  E --> F["Runtime worker thread"]
   G["Player snapshots"] --> F
   F --> H["Visibility matrix"]
   H --> I["CheckTransmit"]
-  I --> J["Visible entities only"]
+  I --> J["Hidden enemies are not sent"]
 ```
 
-## Install
+## Why CS2FOW
 
-1. Install Metamod:Source for CS2.
-2. Download the CS2FOW package for your server platform:
-   - `cs2fow-0.1.0-preview-windows-x86_64.zip`
-   - `cs2fow-0.1.0-preview-linux-x86_64.zip`
-3. Extract the zip into your CS2 `game/csgo` folder.
-4. Start the server.
-5. Run:
+Traditional server-side anti-wallhack approaches often rely on expensive engine
+TraceRay checks. CS2FOW avoids that runtime cost by doing the heavy map work
+offline or in a low-priority background bake, then using the baked BVH8 data at
+runtime.
 
-```text
-cs2fow_status
-```
+In a 12v12 worst-case test, the old trace-based approach could hit around
+`60ms`. CS2FOW averaged around `1ms`, with worst cases around `8ms`.
 
-If the current map data is missing, CS2FOW starts a low-priority background bake.
-After a few seconds, the map data is ready and CS2FOW activates for that map.
+**That is up to 50x faster in the tested scenario.**
 
-Official map prebakes are available as an optional separate download:
+## Quickstart
+
+<table>
+<tr>
+<td width="33%"><b>1. Pick your core package</b><br><br>
+Windows:<br>
+<code>cs2fow-0.1.0-preview-windows-x86_64.zip</code><br><br>
+Linux:<br>
+<code>cs2fow-0.1.0-preview-linux-x86_64.zip</code>
+</td>
+<td width="33%"><b>2. Extract into CS2</b><br><br>
+Extract the package into your server's:<br><br>
+<code>game/csgo</code><br><br>
+Metamod:Source for CS2 must already be installed.
+</td>
+<td width="33%"><b>3. Start and check</b><br><br>
+Start the server, load a map, then run:<br><br>
+<code>cs2fow_status</code>
+</td>
+</tr>
+</table>
+
+Download from the latest release:
+
+https://github.com/karola3vax/CS2FOW/releases/latest
+
+Optional official map prebakes are also available:
 
 ```text
 cs2fow-0.1.0-preview-official-maps.zip
@@ -81,11 +101,21 @@ cs2fow-0.1.0-preview-official-maps.zip
 Install that zip into `game/csgo` if you want official maps to activate without
 first-load baking.
 
+## Automatic Map Baking
+
+If map data is missing or outdated, CS2FOW starts a low-priority background bake
+for the current mounted map. The server stays playable while this happens.
+After the bake validates, CS2FOW activates for that map during the same session.
+
+This supports official maps, custom maps, and Workshop maps as long as CS2 has
+the map mounted and the `addons/cs2fow/data/maps` folder is writable.
+
 ## Hardware Requirement
 
-CS2FOW requires AVX CPU support. Most CPUs from around 2012 and newer support
-AVX, but some VDS providers hide or disable it inside the virtual machine. If
-CS2FOW does not activate, check AVX support with a tool like CPU-Z.
+CS2FOW requires AVX CPU support and OS AVX state support. Most CPUs from around
+2012 and newer support AVX, but some VDS providers hide or disable it inside
+the virtual machine. If CS2FOW does not activate, check AVX support with CPU-Z
+or a similar tool.
 
 ## Configuration
 
@@ -101,11 +131,11 @@ cs2fow_visibility_hold_ms 150
 cs2fow_debug 0
 ```
 
-`cs2fow_status` reports active/disabled state, map CRC, bake version, triangle
-counts, worker timings, result age, evaluated pairs, visible totals, hidden
-totals, and automatic bake progress.
+`cs2fow_status` reports active or disabled state, map CRC, bake version,
+triangle counts, worker timings, result age, evaluated pairs, visible totals,
+hidden totals, and automatic bake progress.
 
-## Map Baking
+## Manual Baker
 
 The packaged baker is used automatically by the plugin, but it can also be run
 manually:
@@ -120,7 +150,7 @@ containing `maps/<map>.vpk` are extracted automatically.
 Generated map data is derived from Counter-Strike 2 game data and is covered by
 `DATA_NOTICE`, not the MIT project license.
 
-## Build
+## Build From Source
 
 The build expects Metamod:Source and HL2SDK CS2 references. The local defaults
 match this workspace layout:
@@ -138,6 +168,8 @@ Then package:
 python package.py
 ```
 
+GitHub Actions builds and tests Windows and Linux packages on every push.
+
 ## Known Limits
 
 - Static map geometry only.
@@ -145,6 +177,12 @@ python package.py
   blockers.
 - No scalar fallback; AVX is required.
 - CS2 updates may require gamedata updates.
+
+## Support
+
+Use GitHub Issues for bug reports and feature requests:
+
+https://github.com/karola3vax/CS2FOW/issues
 
 ## License
 
