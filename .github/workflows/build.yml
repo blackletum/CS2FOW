@@ -34,6 +34,7 @@ jobs:
           git -C ..\references\ambuild checkout ${{ env.AMBUILD_COMMIT }}
           git clone https://github.com/alliedmodders/metamod-source.git ..\references\${{ env.MMS_DIR }}
           git -C ..\references\${{ env.MMS_DIR }} checkout ${{ env.MMS_COMMIT }}
+          git -C ..\references\${{ env.MMS_DIR }} submodule update --init hl2sdk-manifests
           git clone --branch cs2 https://github.com/alliedmodders/hl2sdk.git ..\references\hl2sdk-cs2
           git -C ..\references\hl2sdk-cs2 checkout ${{ env.HL2SDK_COMMIT }}
 
@@ -93,6 +94,7 @@ jobs:
           git -C ../references/ambuild checkout ${AMBUILD_COMMIT}
           git clone https://github.com/alliedmodders/metamod-source.git ../references/${MMS_DIR}
           git -C ../references/${MMS_DIR} checkout ${MMS_COMMIT}
+          git -C ../references/${MMS_DIR} submodule update --init hl2sdk-manifests
           git clone --branch cs2 https://github.com/alliedmodders/hl2sdk.git ../references/hl2sdk-cs2
           git -C ../references/hl2sdk-cs2 checkout ${HL2SDK_COMMIT}
 
