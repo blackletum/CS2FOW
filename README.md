@@ -42,6 +42,12 @@ flowchart LR
   I --> J["Hidden enemies are not sent"]
 ```
 
+<div align="center">
+
+![Static map geometry seen by CS2FOW](docs/scan_cbbl.png)
+
+</div>
+
 ## Why CS2FOW
 
 Traditional server-side anti-wallhack approaches often rely on expensive engine
