@@ -1,5 +1,6 @@
 #include "builder.h"
 #include "glb_import.h"
+#include "lifecycle_guard.h"
 #include "map_source.h"
 #include "subprocess.h"
 #include "visibility_sampling.h"
@@ -244,6 +245,42 @@ void test_visibility_sampling()
 	assert(max_x(swept_targets) > max_x(current_targets) + 10.0f);
 }
 
+void test_lifecycle_guard()
+{
+	using clock = std::chrono::steady_clock;
+	const auto grace = std::chrono::milliseconds(1000);
+	const auto start = clock::time_point {} + std::chrono::seconds(10);
+	lifecycle_guard guard;
+	lifecycle_key stable;
+	stable.has_controller = true;
+	stable.pawn_entity = 12;
+	stable.team = 2;
+	stable.alive = true;
+
+	update_lifecycle_guard(guard, stable, true, start, grace);
+	assert(!lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(999)));
+	assert(lifecycle_allows_hiding(guard, start + grace));
+
+	update_lifecycle_guard(guard, stable, true, start + grace, grace);
+	assert(lifecycle_allows_hiding(guard, start + grace));
+
+	lifecycle_key changed = stable;
+	changed.team = 3;
+	update_lifecycle_guard(guard, changed, true, start + grace + std::chrono::milliseconds(1), grace);
+	assert(!lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(1999)));
+	assert(lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(2001)));
+
+	lifecycle_key dead = changed;
+	dead.alive = false;
+	update_lifecycle_guard(guard, dead, false, start + std::chrono::seconds(3), grace);
+	update_lifecycle_guard(guard, dead, false, start + std::chrono::milliseconds(3500), grace);
+	assert(!lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(4499)));
+
+	update_lifecycle_guard(guard, changed, true, start + std::chrono::milliseconds(4500), grace);
+	assert(!lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(5499)));
+	assert(lifecycle_allows_hiding(guard, start + std::chrono::milliseconds(5500)));
+}
+
 double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 {
 	constexpr uint32_t k_players = 32;
@@ -388,6 +425,7 @@ int main(int argc, char **argv)
 	test_subprocess(std::filesystem::absolute(argv[0]));
 	test_glb(directory);
 	test_visibility_sampling();
+	test_lifecycle_guard();
 	test_bvh(directory);
 	std::filesystem::remove_all(directory);
 	std::cout << "cs2fow_tests: all checks passed\n";

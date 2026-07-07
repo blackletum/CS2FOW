@@ -1,4 +1,5 @@
 #include "bvh8.h"
+#include "lifecycle_guard.h"
 #include "map_source.h"
 #include "subprocess.h"
 #include "vpk.h"
@@ -50,6 +51,7 @@ constexpr uint32_t k_max_gamedata_offset = 4096;
 constexpr uint8_t k_life_alive = 0;
 constexpr uint8_t k_team_t = 2;
 constexpr uint8_t k_team_ct = 3;
+constexpr auto k_lifecycle_fail_open = std::chrono::milliseconds(1000);
 constexpr auto k_auto_bake_timeout = std::chrono::minutes(10);
 static_assert(MAX_EDICTS == 16384);
 
@@ -62,6 +64,7 @@ struct schema_offsets
 	uint32_t is_hltv {};
 	uint32_t player_pawn {};
 	uint32_t pawn_controller {};
+	uint32_t death_time {};
 	uint32_t health {};
 	uint32_t life_state {};
 	uint32_t team {};
@@ -82,6 +85,10 @@ struct schema_offsets
 	uint32_t last_weapon {};
 	uint32_t wearables {};
 	uint32_t hostage_services {};
+	uint32_t is_spawning {};
+	uint32_t death_flags {};
+	uint32_t has_death_info {};
+	uint32_t death_info_time {};
 	uint32_t carried_hostage_prop {};
 };
 
@@ -103,6 +110,13 @@ struct snapshot
 	uint64_t sequence {};
 	std::chrono::steady_clock::time_point captured;
 	player_state players[k_max_players];
+};
+
+struct live_player
+{
+	CEntityInstance *pawn {};
+	int pawn_entity {-1};
+	uint8_t team {};
 };
 
 struct visibility_result
@@ -541,6 +555,7 @@ private:
 	CGameEntitySystem *entity_system() const;
 	CEntityInstance *controller(uint32_t slot) const;
 	CEntityInstance *pawn(CEntityInstance *controller) const;
+	lifecycle_key player_lifecycle(uint32_t slot, CGameEntitySystem *system, live_player *live) const;
 	bool capture(snapshot &value);
 
 	ISmmAPI *api_ {};
@@ -562,6 +577,7 @@ private:
 	bvh8_data data_;
 	visibility_worker worker_;
 	automatic_baker automatic_baker_;
+	std::array<lifecycle_guard, k_max_players> lifecycle_;
 	std::chrono::steady_clock::time_point last_snapshot_ {};
 	uint64_t snapshot_sequence_ {};
 	bool prerequisites_valid_ {};
@@ -734,6 +750,7 @@ bool plugin::resolve_schema(std::string &error)
 	require(fields_.is_hltv, "CBasePlayerController", "m_bIsHLTV");
 	require(fields_.player_pawn, "CCSPlayerController", "m_hPlayerPawn");
 	require(fields_.pawn_controller, "CBasePlayerPawn", "m_hController");
+	require(fields_.death_time, "CBasePlayerPawn", "m_flDeathTime");
 	require(fields_.health, "CBaseEntity", "m_iHealth");
 	require(fields_.life_state, "CBaseEntity", "m_lifeState");
 	require(fields_.team, "CBaseEntity", "m_iTeamNum");
@@ -754,6 +771,10 @@ bool plugin::resolve_schema(std::string &error)
 	require(fields_.last_weapon, "CPlayer_WeaponServices", "m_hLastWeapon");
 	require(fields_.wearables, "CBaseCombatCharacter", "m_hMyWearables");
 	require(fields_.hostage_services, "CCSPlayerPawn", "m_pHostageServices");
+	require(fields_.is_spawning, "CCSPlayerPawn", "m_bIsSpawning");
+	require(fields_.death_flags, "CCSPlayerPawn", "m_iDeathFlags");
+	require(fields_.has_death_info, "CCSPlayerPawn", "m_bHasDeathInfo");
+	require(fields_.death_info_time, "CCSPlayerPawn", "m_flDeathInfoTime");
 	require(fields_.carried_hostage_prop, "CCSPlayer_HostageServices", "m_hCarriedHostageProp");
 	if (!error.empty())
 	{
@@ -787,6 +808,47 @@ CEntityInstance *plugin::pawn(CEntityInstance *controller_entity) const
 	const CEntityHandle handle = field<CEntityHandle>(controller_entity, fields_.player_pawn);
 	CGameEntitySystem *system = entity_system();
 	return handle.IsValid() && system != nullptr ? system->GetEntityInstance(handle) : nullptr;
+}
+
+lifecycle_key plugin::player_lifecycle(uint32_t slot, CGameEntitySystem *system, live_player *live) const
+{
+	if (live != nullptr)
+	{
+		*live = {};
+	}
+	lifecycle_key key;
+	CEntityInstance *controller_entity = system == nullptr ? nullptr : system->GetEntityInstance(CEntityIndex(static_cast<int>(slot + 1u)));
+	key.has_controller = controller_entity != nullptr;
+	if (controller_entity == nullptr)
+	{
+		return key;
+	}
+	key.hltv = field<bool>(controller_entity, fields_.is_hltv);
+	if (key.hltv)
+	{
+		return key;
+	}
+	CEntityInstance *pawn_entity = pawn(controller_entity);
+	CEntityInstance *pawn_controller = pawn_entity == nullptr ? nullptr : system->GetEntityInstance(field<CEntityHandle>(pawn_entity, fields_.pawn_controller));
+	key.pawn_entity = entity_index(pawn_entity);
+	if (pawn_entity == nullptr || pawn_controller != controller_entity || !valid_entity_index(key.pawn_entity))
+	{
+		return key;
+	}
+	key.team = field<uint8_t>(pawn_entity, fields_.team);
+	key.alive = field<uint8_t>(pawn_entity, fields_.life_state) == k_life_alive && field<int32_t>(pawn_entity, fields_.health) > 0;
+	key.spawning = field<bool>(pawn_entity, fields_.is_spawning);
+	key.death_flags = field<int32_t>(pawn_entity, fields_.death_flags);
+	key.has_death_info = field<bool>(pawn_entity, fields_.has_death_info);
+	key.death_time = field<float>(pawn_entity, fields_.death_time);
+	key.death_info_time = field<float>(pawn_entity, fields_.death_info_time);
+	if (live != nullptr && key.alive && !key.spawning && (key.team == k_team_t || key.team == k_team_ct))
+	{
+		live->pawn = pawn_entity;
+		live->pawn_entity = key.pawn_entity;
+		live->team = key.team;
+	}
+	return key;
 }
 
 void plugin::disable(std::string reason)
@@ -938,6 +1000,7 @@ void plugin::change_map(const std::string &map)
 	worker_.stop();
 	data_ = {};
 	source_ = {};
+	lifecycle_ = {};
 	map_ = map;
 	if (!prerequisites_valid_)
 	{
@@ -970,26 +1033,18 @@ bool plugin::capture(snapshot &value)
 	}
 	value.sequence = ++snapshot_sequence_;
 	value.captured = std::chrono::steady_clock::now();
+	const auto now = value.captured;
 	for (uint32_t slot = 0; slot < k_max_players; ++slot)
 	{
-		CEntityInstance *controller_entity = controller(slot);
-		if (controller_entity == nullptr || field<bool>(controller_entity, fields_.is_hltv))
+		live_player live;
+		const lifecycle_key key = player_lifecycle(slot, system, &live);
+		const bool stable = live.pawn != nullptr;
+		update_lifecycle_guard(lifecycle_[slot], key, stable, now, k_lifecycle_fail_open);
+		if (!stable || !lifecycle_allows_hiding(lifecycle_[slot], now))
 		{
 			continue;
 		}
-		CEntityInstance *pawn_entity = pawn(controller_entity);
-		CEntityInstance *pawn_controller = pawn_entity == nullptr ? nullptr : system->GetEntityInstance(field<CEntityHandle>(pawn_entity, fields_.pawn_controller));
-		const int pawn_index = entity_index(pawn_entity);
-		if (pawn_entity == nullptr || pawn_controller != controller_entity || !valid_entity_index(pawn_index) || field<uint8_t>(pawn_entity, fields_.life_state) != k_life_alive
-			|| field<int32_t>(pawn_entity, fields_.health) <= 0)
-		{
-			continue;
-		}
-		const uint8_t team = field<uint8_t>(pawn_entity, fields_.team);
-		if (team != k_team_t && team != k_team_ct)
-		{
-			continue;
-		}
+		CEntityInstance *pawn_entity = live.pawn;
 		void *body_component = field<void *>(pawn_entity, fields_.body_component);
 		void *scene_node = body_component == nullptr ? nullptr : field<void *>(body_component, fields_.scene_node);
 		void *collision = field<void *>(pawn_entity, fields_.collision);
@@ -999,8 +1054,8 @@ bool plugin::capture(snapshot &value)
 		}
 		player_state &player = value.players[slot];
 		player.valid = true;
-		player.team = team;
-		player.pawn_entity = pawn_index;
+		player.team = live.team;
+		player.pawn_entity = live.pawn_entity;
 		player.origin = to_vec3(field<Vector>(scene_node, fields_.abs_origin));
 		player.velocity = to_vec3(field<Vector>(pawn_entity, fields_.abs_velocity));
 		player.mins = to_vec3(field<Vector>(collision, fields_.mins));
@@ -1065,26 +1120,21 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 	}
 	const std::shared_ptr<const visibility_result> result = worker_.result();
 	const auto stale_after = std::chrono::milliseconds(std::max(100, 3 * cs2fow_update_interval_ms.Get()));
-	if (!result || std::chrono::steady_clock::now() - result->completed > stale_after)
+	const auto now = std::chrono::steady_clock::now();
+	if (!result || now - result->completed > stale_after)
 	{
 		return;
 	}
 	const auto current_player_pawn = [&](uint32_t slot, const player_state &saved)
 	{
-		CEntityInstance *controller_entity = controller(slot);
-		if (!saved.valid || controller_entity == nullptr || field<bool>(controller_entity, fields_.is_hltv))
+		live_player live;
+		const lifecycle_key key = player_lifecycle(slot, system, &live);
+		if (!saved.valid || live.pawn == nullptr || !lifecycle_allows_hiding(lifecycle_[slot], now)
+			|| lifecycle_changed(lifecycle_[slot].key, key) || key.pawn_entity != saved.pawn_entity || key.team != saved.team)
 		{
 			return static_cast<CEntityInstance *>(nullptr);
 		}
-		CEntityInstance *pawn_entity = pawn(controller_entity);
-		CEntityInstance *pawn_controller = pawn_entity == nullptr ? nullptr : system->GetEntityInstance(field<CEntityHandle>(pawn_entity, fields_.pawn_controller));
-		if (pawn_entity == nullptr || pawn_controller != controller_entity || entity_index(pawn_entity) != saved.pawn_entity || !valid_entity_index(saved.pawn_entity)
-			|| field<uint8_t>(pawn_entity, fields_.life_state) != k_life_alive || field<int32_t>(pawn_entity, fields_.health) <= 0)
-		{
-			return static_cast<CEntityInstance *>(nullptr);
-		}
-		const uint8_t team = field<uint8_t>(pawn_entity, fields_.team);
-		return team == saved.team && (team == k_team_t || team == k_team_ct) ? pawn_entity : nullptr;
+		return live.pawn;
 	};
 	for (int i = 0; i < count; ++i)
 	{
