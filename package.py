@@ -7,6 +7,7 @@ entries, broken map/report pairs, modes, integrity, or checksums stop packaging.
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import sys
 import zipfile
@@ -16,6 +17,7 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parent
 PACKAGES = ROOT / "packages"
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+RELEASE_MANIFEST = ROOT / "release" / f"v{VERSION}-manifest.json"
 
 
 def copy_file(source: Path, target: Path) -> None:
@@ -128,13 +130,18 @@ def build_core_package(platform: str, plugin_name: str, baker_name: str, vrf_dir
   return archive
 
 
-def build_official_maps_package() -> Path | None:
-  maps = sorted((ROOT / "data" / "maps").glob("*"))
-  maps = [path for path in maps if path.suffix in {".bvh8", ".json"}]
-  if not maps:
-    return None
-  if {path.stem for path in maps if path.suffix == ".bvh8"} != {path.stem for path in maps if path.suffix == ".json"}:
-    raise RuntimeError("official map bakes and reports do not match")
+def build_official_maps_package() -> Path:
+  manifest = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
+  map_names = manifest.get("official_maps", [])
+  if manifest.get("version") != VERSION or len(map_names) != 10 or len(set(map_names)) != len(map_names):
+    raise RuntimeError("release manifest version or official map list is invalid")
+  if any(not name.startswith("de_") or not name.replace("_", "").isascii()
+      or not name.replace("_", "").isalnum() for name in map_names):
+    raise RuntimeError("release manifest contains an unsafe official map name")
+  maps = [ROOT / "data" / "maps" / f"{name}{suffix}" for name in map_names for suffix in (".bvh8", ".json")]
+  missing = [path.name for path in maps if not path.is_file()]
+  if missing:
+    raise RuntimeError(f"official map bakes or reports are missing: {', '.join(missing)}")
 
   out = package_root(f"cs2fow-{VERSION}-official-maps")
   copy_file(ROOT / "DATA_NOTICE", out / "DATA_NOTICE")
@@ -179,9 +186,7 @@ def main() -> None:
       "linux64",
     ))
   if "official-maps" in targets:
-    maps_archive = build_official_maps_package()
-    if maps_archive is not None:
-      archives.append(maps_archive)
+    archives.append(build_official_maps_package())
   if not archives:
     raise SystemExit(f"no packages built for targets: {' '.join(targets)}")
   write_checksums(archives)
