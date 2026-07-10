@@ -4,9 +4,11 @@
 #include "glb_import.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <string_view>
 
 namespace cs2fow
 {
@@ -51,6 +53,31 @@ std::vector<std::string> parse_interact_as(const cgltf_data *data, const cgltf_e
 		position = close + 1u;
 	}
 	return result;
+}
+
+bool parse_surface_property(const cgltf_data *data, const cgltf_extras &extras, std::string &result)
+{
+	result.clear();
+	cgltf_size size = 0;
+	if (cgltf_copy_extras_json(data, &extras, nullptr, &size) != cgltf_result_success || size == 0)
+	{
+		return false;
+	}
+	std::string json(size, '\0');
+	if (cgltf_copy_extras_json(data, &extras, json.data(), &size) != cgltf_result_success)
+	{
+		return false;
+	}
+	const size_t key = json.find("\"SurfaceProperty\"");
+	const size_t colon = key == std::string::npos ? std::string::npos : json.find(':', key);
+	const size_t quote = colon == std::string::npos ? std::string::npos : json.find('"', colon);
+	const size_t close = quote == std::string::npos ? std::string::npos : json.find('"', quote + 1u);
+	if (close == std::string::npos)
+	{
+		return false;
+	}
+	result = json.substr(quote + 1u, close - quote - 1u);
+	return true;
 }
 
 vec3 transform_point(const cgltf_float matrix[16], const cgltf_float source[3])
@@ -98,9 +125,39 @@ const cgltf_accessor *position_accessor(const cgltf_primitive &primitive)
 
 } // namespace
 
-bool physics_tags_accepted(const std::vector<std::string> &tags)
+bool physics_group_accepted(const std::vector<std::string> &tags, const std::string &surface_property)
 {
-	return tags.empty() || std::find(tags.begin(), tags.end(), "solid") != tags.end();
+	const bool untagged = tags.empty();
+	const bool explicitly_opaque = std::find(tags.begin(), tags.end(), "solid") != tags.end()
+		&& std::find(tags.begin(), tags.end(), "blocklight") != tags.end();
+	if (!untagged && !explicitly_opaque)
+	{
+		return false;
+	}
+
+	std::string surface = surface_property;
+	std::transform(surface.begin(), surface.end(), surface.begin(), [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+	constexpr std::string_view porous[] = {
+		"glass", "chainlink", "grate", "foliage", "tree", "water", "puddle", "window", "cloth", "basket", "mesh", "netting", "wire", "screen", "vent"
+	};
+	for (const std::string_view value : porous)
+	{
+		if (surface.find(value) != std::string::npos)
+		{
+			return false;
+		}
+	}
+	if (explicitly_opaque || surface.empty())
+	{
+		return true;
+	}
+
+	// ponytail: keep this conservative; switch to rendered-material opacity if custom maps outgrow the known surface list.
+	constexpr std::string_view opaque[] = {
+		"default", "concrete", "rock", "boulder", "brick", "plaster", "sheetrock", "tile", "dirt", "sand", "gravel",
+		"metal", "solidmetal", "wood", "porcelain", "pottery", "clay", "carpet"
+	};
+	return std::any_of(std::begin(opaque), std::end(opaque), [&surface](std::string_view value) { return surface.starts_with(value); });
 }
 
 bool import_physics_glb(const std::filesystem::path &path, std::vector<triangle> &triangles, import_report &report, std::string &error)
@@ -130,8 +187,9 @@ bool import_physics_glb(const std::filesystem::path &path, std::vector<triangle>
 		}
 		physics_group_report group;
 		group.name = node.name == nullptr ? "unnamed" : node.name;
+		const bool has_surface_property = parse_surface_property(data, node.extras, group.surface_property);
 		group.tags = parse_interact_as(data, node.extras);
-		group.accepted = physics_tags_accepted(group.tags);
+		group.accepted = has_surface_property && physics_group_accepted(group.tags, group.surface_property);
 		cgltf_float transform[16] {};
 		cgltf_node_transform_world(&node, transform);
 

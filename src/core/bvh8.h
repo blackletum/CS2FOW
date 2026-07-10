@@ -31,7 +31,7 @@ struct bounds
 	vec3 max;
 };
 
-inline constexpr uint32_t k_bvh8_version = 1;
+inline constexpr uint32_t k_bvh8_version = 2;
 inline constexpr uint32_t k_bvh8_flag_nested_map_vpk = 1u << 0u;
 inline constexpr uint32_t k_bvh8_known_flags = k_bvh8_flag_nested_map_vpk;
 inline constexpr uint32_t k_invalid_ref = 0xffffffffu;

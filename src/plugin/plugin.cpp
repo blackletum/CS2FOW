@@ -688,7 +688,7 @@ private:
 	void refresh_aux_visual_cache(CGameEntitySystem *system);
 	bool collect_player_visual_group(CGameEntitySystem *system, CEntityInstance *pawn, visual_entity_group &group) const;
 	bool group_fully_marked(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits, const visual_entity_group &group) const;
-	void clear_group(CGameEntitySystem *system, const transmit_masks<CBitVec<MAX_EDICTS>> &masks, const visual_entity_group &group,
+	void clear_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits, const visual_entity_group &group,
 		int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
 	void record_hidden_entity(CGameEntitySystem *system, CEntityHandle handle, int edict, const visual_entity_group &group,
 		int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
@@ -724,6 +724,7 @@ private:
 	std::array<lifecycle_guard, k_max_players> lifecycle_;
 	std::array<std::array<pair_guard, k_max_players>, k_max_players> pair_guards_;
 	std::array<std::array<visual_entity_group, k_max_players>, k_max_players> hidden_groups_;
+	std::array<std::array<bool, k_max_players>, k_max_players> awaiting_full_update_;
 	std::mutex transmit_state_mutex_;
 	std::chrono::steady_clock::time_point last_snapshot_ {};
 	uint64_t snapshot_sequence_ {};
@@ -854,12 +855,10 @@ bool plugin::read_gamedata(std::string &error)
 #if defined(_WIN32)
 	constexpr std::string_view k_recipient_key = "recipient_slot_offset_windows";
 	constexpr std::string_view k_entity_system_key = "game_entity_system_offset_windows";
-	constexpr std::string_view k_aux_masks_key = "checktransmit_aux_mask_offsets_windows";
 	constexpr std::string_view k_full_update_key = "checktransmit_full_update_offset_windows";
 #else
 	constexpr std::string_view k_recipient_key = "recipient_slot_offset_linux";
 	constexpr std::string_view k_entity_system_key = "game_entity_system_offset_linux";
-	constexpr std::string_view k_aux_masks_key = "checktransmit_aux_mask_offsets_linux";
 	constexpr std::string_view k_full_update_key = "checktransmit_full_update_offset_linux";
 #endif
 	std::string line;
@@ -871,20 +870,11 @@ bool plugin::read_gamedata(std::string &error)
 			continue;
 		}
 		const std::string key = line.substr(0, equals);
-		if (key != k_recipient_key && key != k_entity_system_key && key != k_aux_masks_key && key != k_full_update_key)
+		if (key != k_recipient_key && key != k_entity_system_key && key != k_full_update_key)
 		{
 			continue;
 		}
 		std::string_view text(line.data() + equals + 1u, line.size() - equals - 1u);
-		if (key == k_aux_masks_key)
-		{
-			if (!parse_checktransmit_aux_mask_offsets(text, transmit_offsets_.aux_mask_offsets, k_max_gamedata_offset))
-			{
-				error = "invalid gamedata value for " + key;
-				return false;
-			}
-			continue;
-		}
 		uint32_t value {};
 		if (!parse_gamedata_uint32(text, value))
 		{
@@ -895,9 +885,7 @@ bool plugin::read_gamedata(std::string &error)
 		if (key == k_entity_system_key) entity_system_offset_ = value;
 		if (key == k_full_update_key) transmit_offsets_.full_update_offset = value;
 	}
-	const bool aux_offsets_valid = std::all_of(transmit_offsets_.aux_mask_offsets.begin(), transmit_offsets_.aux_mask_offsets.end(),
-		[](uint32_t offset) { return offset != 0; });
-	if (recipient_slot_offset_ == 0 || entity_system_offset_ == 0 || transmit_offsets_.full_update_offset == 0 || !aux_offsets_valid)
+	if (recipient_slot_offset_ == 0 || entity_system_offset_ == 0 || transmit_offsets_.full_update_offset == 0)
 	{
 		error = "gamedata does not contain this platform's required offsets";
 		return false;
@@ -1210,10 +1198,10 @@ void plugin::record_hidden_entity(CGameEntitySystem *system, CEntityHandle handl
 	copy_entity_name(system == nullptr ? nullptr : system->GetEntityInstance(handle), record.name);
 }
 
-void plugin::clear_group(CGameEntitySystem *system, const transmit_masks<CBitVec<MAX_EDICTS>> &masks,
+void plugin::clear_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits,
 	const visual_entity_group &group, int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now)
 {
-	if (masks.count == 0)
+	if (bits == nullptr)
 	{
 		return;
 	}
@@ -1225,10 +1213,7 @@ void plugin::clear_group(CGameEntitySystem *system, const transmit_masks<CBitVec
 		{
 			continue;
 		}
-		for (size_t mask = 0; mask < masks.count; ++mask)
-		{
-			masks.values[mask]->Clear(index);
-		}
+		bits->Clear(index);
 		record_hidden_entity(system, handle, index, group, recipient_slot, reason, now);
 	}
 }
@@ -1261,6 +1246,10 @@ void plugin::reset_transmit_state()
 		{
 			hidden_group_clear(group);
 		}
+	}
+	for (auto &row : awaiting_full_update_)
+	{
+		row.fill(false);
 	}
 	aux_visual_count_ = 0;
 	for (aux_visual_entity &entity : aux_visual_entities_)
@@ -1552,19 +1541,38 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 	{
 		return;
 	}
+	const std::shared_ptr<const visibility_result> result = worker_.result();
+	const auto stale_after = std::chrono::milliseconds(std::max(100, 3 * cs2fow_update_interval_ms.Get()));
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard<std::mutex> lock(transmit_state_mutex_);
+	for (int i = 0; i < count; ++i)
+	{
+		CCheckTransmitInfo *info = infos[i];
+		if (info == nullptr || !read_checktransmit_full_update(info, transmit_offsets_.full_update_offset))
+		{
+			continue;
+		}
+		int slot = -1;
+		std::memcpy(&slot, reinterpret_cast<const char *>(info) + recipient_slot_offset_, sizeof(slot));
+		if (slot < 0 || slot >= static_cast<int>(k_max_players))
+		{
+			continue;
+		}
+		awaiting_full_update_[slot].fill(false);
+		for (visual_entity_group &group : hidden_groups_[slot])
+		{
+			hidden_group_clear(group);
+		}
+	}
+	if (!result || now - result->completed > stale_after)
+	{
+		return;
+	}
 	CGameEntitySystem *system = entity_system();
 	if (system == nullptr)
 	{
 		return;
 	}
-	const std::shared_ptr<const visibility_result> result = worker_.result();
-	const auto stale_after = std::chrono::milliseconds(std::max(100, 3 * cs2fow_update_interval_ms.Get()));
-	const auto now = std::chrono::steady_clock::now();
-	if (!result || now - result->completed > stale_after)
-	{
-		return;
-	}
-	std::lock_guard<std::mutex> lock(transmit_state_mutex_);
 	const auto current_player_pawn = [&](uint32_t slot, const player_state &saved)
 	{
 		live_player live;
@@ -1583,18 +1591,10 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 		{
 			continue;
 		}
-		if (read_checktransmit_full_update(info, transmit_offsets_.full_update_offset))
-		{
-			continue;
-		}
-		transmit_masks<CBitVec<MAX_EDICTS>> masks;
-		if (!collect_transmit_masks(info, info->m_pTransmitEntity, transmit_offsets_.aux_mask_offsets, masks))
-		{
-			continue;
-		}
 		int slot = -1;
 		std::memcpy(&slot, reinterpret_cast<const char *>(info) + recipient_slot_offset_, sizeof(slot));
-		if (slot < 0 || slot >= static_cast<int>(k_max_players) || !result->players[slot].valid)
+		if (slot < 0 || slot >= static_cast<int>(k_max_players) || read_checktransmit_full_update(info, transmit_offsets_.full_update_offset)
+			|| !result->players[slot].valid)
 		{
 			continue;
 		}
@@ -1615,7 +1615,7 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			{
 				if (hidden_group_quarantined(stored_group, now))
 				{
-					clear_group(system, masks, stored_group, slot, hide_reason::quarantine, now);
+					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
 				}
 				continue;
 			}
@@ -1624,17 +1624,23 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			{
 				if (hidden_group_quarantined(stored_group, now))
 				{
-					clear_group(system, masks, stored_group, slot, hide_reason::quarantine, now);
+					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
 				}
 				continue;
 			}
 			pair_guard &guard = pair_guards_[slot][target];
 			visual_entity_group current_group;
 			const bool current_group_valid = collect_player_visual_group(system, current_pawn, current_group);
-			const bool full_group_marked = current_group_valid && group_fully_marked(system, masks.primary, current_group);
+			const bool full_group_marked = current_group_valid && group_fully_marked(system, info->m_pTransmitEntity, current_group);
 			if (current_group_valid)
 			{
 				update_pair_visual_group(guard, make_current_visual_group_key(current_group), now, k_pair_baseline_warmup);
+			}
+			if (awaiting_full_update_[slot][target] && current_group_valid)
+			{
+				hidden_group_store(stored_group, current_group.source, current_group.handles, current_group.count, now, k_hidden_entity_quarantine);
+				clear_group(system, info->m_pTransmitEntity, current_group, slot, hide_reason::current, now);
+				continue;
 			}
 			if (result->visible[slot][target])
 			{
@@ -1658,12 +1664,13 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			{
 				if (hidden_group_quarantined(stored_group, now))
 				{
-					clear_group(system, masks, stored_group, slot, hide_reason::quarantine, now);
+					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
 				}
 				continue;
 			}
 			hidden_group_store(stored_group, current_group.source, current_group.handles, current_group.count, now, k_hidden_entity_quarantine);
-			clear_group(system, masks, current_group, slot, hide_reason::current, now);
+			awaiting_full_update_[slot][target] = true;
+			clear_group(system, info->m_pTransmitEntity, current_group, slot, hide_reason::current, now);
 		}
 	}
 }

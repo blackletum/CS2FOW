@@ -126,9 +126,10 @@ void test_subprocess(const std::filesystem::path &executable)
 	assert(result.cancelled);
 }
 
-void write_test_glb(const std::filesystem::path &path)
+void write_test_glb(const std::filesystem::path &path, const std::string &surface_property, bool include_surface_property = true)
 {
-	std::string json = R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":42}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[1,1,0],"min":[0,0,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"nodes":[{"mesh":0,"extras":{"InteractAs":[]}}],"scenes":[{"nodes":[0]}],"scene":0})";
+	const std::string surface_json = include_surface_property ? "\"SurfaceProperty\":\"" + surface_property + "\"," : "";
+	std::string json = R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":42}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","max":[1,1,0],"min":[0,0,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],"nodes":[{"mesh":0,"extras":{)" + surface_json + R"("InteractAs":[]}}],"scenes":[{"nodes":[0]}],"scene":0})";
 	while (json.size() % 4u != 0) json.push_back(' ');
 	std::vector<std::byte> binary;
 	const float vertices[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
@@ -149,14 +150,24 @@ void write_test_glb(const std::filesystem::path &path)
 void test_glb(const std::filesystem::path &directory)
 {
 	const std::filesystem::path path = directory / "test.glb";
-	write_test_glb(path);
+	write_test_glb(path, "concrete");
 	std::vector<triangle> triangles;
 	import_report report;
 	std::string error;
 	assert(import_physics_glb(path, triangles, report, error));
-	assert(triangles.size() == 1 && report.raw_triangles == 1 && report.groups.size() == 1 && report.groups[0].accepted);
-	assert(physics_tags_accepted({}) && physics_tags_accepted({"blocklight", "solid"}));
-	assert(!physics_tags_accepted({"playerclip"}) && !physics_tags_accepted({"unknown"}));
+	assert(triangles.size() == 1 && report.raw_triangles == 1 && report.groups.size() == 1 && report.groups[0].accepted
+		&& report.groups[0].surface_property == "concrete");
+	assert(physics_group_accepted({}, "") && physics_group_accepted({}, "metal_sheetmetal"));
+	assert(physics_group_accepted({"blocklight", "solid"}, "unknown"));
+	assert(!physics_group_accepted({}, "glass") && !physics_group_accepted({}, "chainlink") && !physics_group_accepted({}, "metalgrate")
+		&& !physics_group_accepted({}, "foliage") && !physics_group_accepted({}, "unknown"));
+	assert(!physics_group_accepted({"playerclip"}, "concrete") && !physics_group_accepted({"solid"}, "concrete"));
+
+	write_test_glb(path, "glass");
+	assert(!import_physics_glb(path, triangles, report, error));
+	assert(report.groups.size() == 1 && report.groups[0].surface_property == "glass" && !report.groups[0].accepted);
+	write_test_glb(path, "", false);
+	assert(!import_physics_glb(path, triangles, report, error) && report.groups.size() == 1 && !report.groups[0].accepted);
 }
 
 bool scalar_hit(const triangle &value, vec3 origin, vec3 target)
@@ -217,26 +228,6 @@ visual_group_key test_visual_key(std::initializer_list<uint32_t> handles)
 	}
 	return make_visual_group_key(values, count);
 }
-
-struct test_transmit_mask
-{
-	std::array<bool, 64> bits {};
-
-	void Set(int index)
-	{
-		bits[static_cast<size_t>(index)] = true;
-	}
-
-	void Clear(int index)
-	{
-		bits[static_cast<size_t>(index)] = false;
-	}
-
-	bool IsBitSet(int index) const
-	{
-		return bits[static_cast<size_t>(index)];
-	}
-};
 
 void test_visibility_sampling()
 {
@@ -503,74 +494,20 @@ void test_pair_guard()
 
 void test_checktransmit_private_offsets()
 {
-	std::array<uint32_t, k_checktransmit_aux_mask_count> offsets {};
-	assert(parse_checktransmit_aux_mask_offsets("8,16,24", offsets, 4096));
-	assert(offsets[0] == 8 && offsets[1] == 16 && offsets[2] == 24);
-	assert(parse_checktransmit_aux_mask_offsets(" 8, 16, 24 ", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,16", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,16,24,32", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,8,24", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,18,24", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,16,999999", offsets, 4096));
-	assert(!parse_checktransmit_aux_mask_offsets("8,16,", offsets, 4096));
-
 	uint32_t value {};
 	assert(parse_gamedata_uint32(" 580 ", value) && value == 580);
 	assert(!parse_gamedata_uint32("580x", value));
 	assert(valid_gamedata_offset(580, alignof(bool), 4096));
 	assert(!valid_gamedata_offset(0, alignof(void *), 4096));
-}
-
-void test_checktransmit_masks()
-{
 	struct fake_info
 	{
-		test_transmit_mask *primary;
-		test_transmit_mask *aux1;
-		test_transmit_mask *aux2;
-		test_transmit_mask *aux3;
-		bool full_update;
+		std::array<std::byte, 32> padding {};
+		bool full_update {};
 	};
-
-	test_transmit_mask primary;
-	test_transmit_mask aux1;
-	test_transmit_mask aux2;
-	test_transmit_mask aux3;
-	fake_info info {&primary, &aux1, &aux2, &aux3, false};
-	transmit_masks<test_transmit_mask> masks;
-	const std::array<uint32_t, k_checktransmit_aux_mask_count> offsets {8, 16, 24};
-	assert(collect_transmit_masks(&info, info.primary, offsets, masks));
-	assert(masks.primary == &primary);
-	assert(masks.count == 4);
+	fake_info info;
 	assert(!read_checktransmit_full_update(&info, 32));
 	info.full_update = true;
 	assert(read_checktransmit_full_update(&info, 32));
-	info.full_update = false;
-
-	for (test_transmit_mask *mask : {&primary, &aux1, &aux2, &aux3})
-	{
-		mask->Set(10);
-		mask->Set(20);
-		mask->Set(30);
-	}
-	const std::array<int, 3> handles {10, 20, 30};
-	clear_transmit_group(masks, handles, handles.size(), [](int handle) { return handle; }, [](int index) { return index >= 0 && index < 64; });
-	for (test_transmit_mask *mask : {&primary, &aux1, &aux2, &aux3})
-	{
-		assert(!mask->IsBitSet(10));
-		assert(!mask->IsBitSet(20));
-		assert(!mask->IsBitSet(30));
-	}
-
-	info.aux2 = &aux1;
-	assert(collect_transmit_masks(&info, info.primary, offsets, masks));
-	assert(masks.count == 3);
-
-	info.aux2 = nullptr;
-	assert(!collect_transmit_masks(&info, info.primary, offsets, masks));
-
-	info.aux2 = reinterpret_cast<test_transmit_mask *>(reinterpret_cast<uintptr_t>(&aux2) + 1u);
-	assert(!collect_transmit_masks(&info, info.primary, offsets, masks));
 }
 
 void test_hidden_entity_group()
@@ -780,7 +717,6 @@ int main(int argc, char **argv)
 	test_visual_group_key();
 	test_pair_guard();
 	test_checktransmit_private_offsets();
-	test_checktransmit_masks();
 	test_hidden_entity_group();
 	test_bvh(directory);
 	std::filesystem::remove_all(directory);

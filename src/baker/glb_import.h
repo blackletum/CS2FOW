@@ -13,6 +13,7 @@ namespace cs2fow
 struct physics_group_report
 {
 	std::string name;
+	std::string surface_property;
 	std::vector<std::string> tags;
 	uint64_t triangles {};
 	bool accepted {};
@@ -27,7 +28,6 @@ struct import_report
 };
 
 bool import_physics_glb(const std::filesystem::path &path, std::vector<triangle> &triangles, import_report &report, std::string &error);
-bool physics_tags_accepted(const std::vector<std::string> &tags);
+bool physics_group_accepted(const std::vector<std::string> &tags, const std::string &surface_property);
 
 } // namespace cs2fow
-

@@ -213,7 +213,7 @@ bool write_report(const std::filesystem::path &path, const arguments &args, cons
 	{
 		const physics_group_report &group = report.groups[i];
 		stream << "    {\"name\": \"" << json_escape(group.name) << "\", \"accepted\": " << (group.accepted ? "true" : "false")
-			<< ", \"triangles\": " << group.triangles << ", \"tags\": [";
+			<< ", \"triangles\": " << group.triangles << ", \"surface_property\": \"" << json_escape(group.surface_property) << "\", \"tags\": [";
 		for (size_t tag = 0; tag < group.tags.size(); ++tag)
 		{
 			stream << (tag == 0 ? "" : ", ") << '"' << json_escape(group.tags[tag]) << '"';

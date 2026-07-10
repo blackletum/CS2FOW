@@ -314,14 +314,8 @@ Download from the latest release:
 
 https://github.com/karola3vax/CS2FOW/releases/latest
 
-The optional official map prebakes from `v0.1.0-preview` remain compatible:
-
-```text
-cs2fow-0.1.0-preview-official-maps.zip
-```
-
-Install that zip into `game/csgo` if you want official maps to activate without
-first-load baking.
+Prebakes made before BVH8 version 2 are rejected and rebuilt automatically;
+they included collision surfaces that players can see through.
 
 ## Automatic Map Baking
 
