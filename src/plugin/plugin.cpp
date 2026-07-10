@@ -1613,19 +1613,11 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			}
 			if (!player.valid || player.team == observer.team)
 			{
-				if (hidden_group_quarantined(stored_group, now))
-				{
-					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
-				}
 				continue;
 			}
 			CEntityInstance *current_pawn = current_player_pawn(target, player);
 			if (current_pawn == nullptr)
 			{
-				if (hidden_group_quarantined(stored_group, now))
-				{
-					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
-				}
 				continue;
 			}
 			pair_guard &guard = pair_guards_[slot][target];
