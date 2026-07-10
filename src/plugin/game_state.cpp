@@ -1,0 +1,428 @@
+#include "plugin.h"
+
+#include <inetchannelinfo.h>
+#include <tier1/utlvector.h>
+
+#include <algorithm>
+#include <cstring>
+
+namespace cs2fow
+{
+namespace
+{
+
+template <typename type>
+type &field(void *object, uint32_t offset)
+{
+	return *reinterpret_cast<type *>(reinterpret_cast<uintptr_t>(object) + offset);
+}
+
+bool find_field_recursive(SchemaClassInfoData_t *class_info, const char *name, uint32_t &offset)
+{
+	if (class_info == nullptr)
+	{
+		return false;
+	}
+	for (int i = 0; i < class_info->m_nFieldCount; ++i)
+	{
+		if (std::strcmp(class_info->m_pFields[i].m_pszName, name) == 0)
+		{
+			offset = class_info->m_pFields[i].m_nSingleInheritanceOffset;
+			return true;
+		}
+	}
+	for (int i = 0; i < class_info->m_nBaseClassCount; ++i)
+	{
+		if (find_field_recursive(class_info->m_pBaseClasses[i].m_pClass, name, offset))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool resolve_field(ISchemaSystem *schema, const char *class_name, const char *field_name, uint32_t &offset)
+{
+#if defined(_WIN32)
+	CSchemaSystemTypeScope *scope = schema->FindTypeScopeForModule("server.dll");
+#else
+	CSchemaSystemTypeScope *scope = schema->FindTypeScopeForModule("libserver.so");
+#endif
+	if (scope == nullptr)
+	{
+		return false;
+	}
+	return find_field_recursive(scope->FindDeclaredClass(class_name).Get(), field_name, offset);
+}
+
+vec3 to_vec3(const Vector &value)
+{
+	return {value.x, value.y, value.z};
+}
+
+} // namespace
+
+int entity_index(CEntityInstance *entity)
+{
+	return entity != nullptr && entity->m_pEntity != nullptr ? entity->m_pEntity->m_EHandle.GetEntryIndex() : -1;
+}
+
+CEntityHandle entity_handle(CEntityInstance *entity)
+{
+	return entity != nullptr && entity->m_pEntity != nullptr ? entity->m_pEntity->GetRefEHandle() : CEntityHandle {};
+}
+
+void copy_entity_name(CEntityInstance *entity, char (&name)[k_max_entity_name])
+{
+	const char *source = entity != nullptr && entity->m_pEntity != nullptr ? entity->m_pEntity->GetClassname() : nullptr;
+	if (source == nullptr || source[0] == '\0')
+	{
+		source = "<unknown>";
+	}
+	std::snprintf(name, sizeof(name), "%s", source);
+}
+
+bool valid_networked_edict_index(int index)
+{
+	return index > 0 && index < MAX_EDICTS;
+}
+
+int resolve_entity_index(CGameEntitySystem *system, CEntityHandle handle)
+{
+	if (system == nullptr || !handle.IsValid())
+	{
+		return -1;
+	}
+	return entity_index(system->GetEntityInstance(handle));
+}
+
+bool plugin::resolve_schema(std::string &error)
+{
+	auto require = [&](uint32_t &target, const char *class_name, const char *field_name)
+	{
+		if (!resolve_field(schema_, class_name, field_name, target))
+		{
+			if (!error.empty())
+			{
+				error += ", ";
+			}
+			error += class_name;
+			error += "::";
+			error += field_name;
+		}
+	};
+	auto optional = [&](uint32_t &target, const char *class_name, const char *field_name)
+	{
+		return resolve_field(schema_, class_name, field_name, target);
+	};
+	require(fields_.is_hltv, "CBasePlayerController", "m_bIsHLTV");
+	require(fields_.player_pawn, "CCSPlayerController", "m_hPlayerPawn");
+	require(fields_.pawn_controller, "CBasePlayerPawn", "m_hController");
+	require(fields_.death_time, "CBasePlayerPawn", "m_flDeathTime");
+	require(fields_.health, "CBaseEntity", "m_iHealth");
+	require(fields_.life_state, "CBaseEntity", "m_lifeState");
+	require(fields_.team, "CBaseEntity", "m_iTeamNum");
+	require(fields_.body_component, "CBaseEntity", "m_CBodyComponent");
+	require(fields_.scene_node, "CBodyComponent", "m_pSceneNode");
+	require(fields_.abs_origin, "CGameSceneNode", "m_vecAbsOrigin");
+	require(fields_.abs_velocity, "CBaseEntity", "m_vecAbsVelocity");
+	require(fields_.view_offset, "CBaseModelEntity", "m_vecViewOffset");
+	require(fields_.view_x, "CNetworkViewOffsetVector", "m_vecX");
+	require(fields_.view_y, "CNetworkViewOffsetVector", "m_vecY");
+	require(fields_.view_z, "CNetworkViewOffsetVector", "m_vecZ");
+	require(fields_.eye_angles, "CCSPlayerPawn", "m_angEyeAngles");
+	require(fields_.collision, "CBaseEntity", "m_pCollision");
+	require(fields_.mins, "CCollisionProperty", "m_vecMins");
+	require(fields_.maxs, "CCollisionProperty", "m_vecMaxs");
+	require(fields_.weapon_services, "CBasePlayerPawn", "m_pWeaponServices");
+	require(fields_.weapons, "CPlayer_WeaponServices", "m_hMyWeapons");
+	require(fields_.active_weapon, "CPlayer_WeaponServices", "m_hActiveWeapon");
+	require(fields_.last_weapon, "CPlayer_WeaponServices", "m_hLastWeapon");
+	const bool weapon_item_schema_available =
+		optional(fields_.attribute_manager, "CEconEntity", "m_AttributeManager")
+		&& optional(fields_.item, "CAttributeContainer", "m_Item")
+		&& optional(fields_.item_definition_index, "CEconItemView", "m_iItemDefinitionIndex");
+	require(fields_.wearables, "CBaseCombatCharacter", "m_hMyWearables");
+	require(fields_.hostage_services, "CCSPlayerPawn", "m_pHostageServices");
+	require(fields_.is_spawning, "CCSPlayerPawn", "m_bIsSpawning");
+	require(fields_.death_flags, "CCSPlayerPawn", "m_iDeathFlags");
+	require(fields_.has_death_info, "CCSPlayerPawn", "m_bHasDeathInfo");
+	require(fields_.death_info_time, "CCSPlayerPawn", "m_flDeathInfoTime");
+	require(fields_.carried_hostage_prop, "CCSPlayer_HostageServices", "m_hCarriedHostageProp");
+	const bool owner_effect_schema_available =
+		optional(fields_.owner_entity, "CBaseEntity", "m_hOwnerEntity")
+		&& optional(fields_.effect_entity, "CBaseEntity", "m_hEffectEntity");
+	if (!error.empty())
+	{
+		error = "missing schema fields: " + error;
+		return false;
+	}
+	weapon_item_schema_available_ = weapon_item_schema_available;
+	owner_effect_schema_available_ = owner_effect_schema_available;
+	return true;
+}
+
+CGameEntitySystem *plugin::entity_system() const
+{
+	if (game_resource_ == nullptr || entity_system_offset_ == 0)
+	{
+		return nullptr;
+	}
+	return field<CGameEntitySystem *>(game_resource_, entity_system_offset_);
+}
+
+CEntityInstance *plugin::controller(uint32_t slot) const
+{
+	CGameEntitySystem *system = entity_system();
+	return system == nullptr ? nullptr : system->GetEntityInstance(CEntityIndex(static_cast<int>(slot + 1u)));
+}
+
+CEntityInstance *plugin::pawn(CEntityInstance *controller_entity) const
+{
+	if (controller_entity == nullptr)
+	{
+		return nullptr;
+	}
+	const CEntityHandle handle = field<CEntityHandle>(controller_entity, fields_.player_pawn);
+	CGameEntitySystem *system = entity_system();
+	return handle.IsValid() && system != nullptr ? system->GetEntityInstance(handle) : nullptr;
+}
+
+lifecycle_key plugin::player_lifecycle(uint32_t slot, CGameEntitySystem *system, live_player *live) const
+{
+	if (live != nullptr)
+	{
+		*live = {};
+	}
+	lifecycle_key key;
+	CEntityInstance *controller_entity = system == nullptr ? nullptr : system->GetEntityInstance(CEntityIndex(static_cast<int>(slot + 1u)));
+	key.has_controller = controller_entity != nullptr;
+	if (controller_entity == nullptr)
+	{
+		return key;
+	}
+	key.hltv = field<bool>(controller_entity, fields_.is_hltv);
+	if (key.hltv)
+	{
+		return key;
+	}
+	CEntityInstance *pawn_entity = pawn(controller_entity);
+	CEntityInstance *pawn_controller = pawn_entity == nullptr ? nullptr : system->GetEntityInstance(field<CEntityHandle>(pawn_entity, fields_.pawn_controller));
+	key.pawn_entity = entity_index(pawn_entity);
+	if (pawn_entity == nullptr || pawn_controller != controller_entity || !valid_networked_edict_index(key.pawn_entity))
+	{
+		return key;
+	}
+	key.team = field<uint8_t>(pawn_entity, fields_.team);
+	key.alive = field<uint8_t>(pawn_entity, fields_.life_state) == k_life_alive && field<int32_t>(pawn_entity, fields_.health) > 0;
+	key.spawning = field<bool>(pawn_entity, fields_.is_spawning);
+	key.death_flags = field<int32_t>(pawn_entity, fields_.death_flags);
+	key.has_death_info = field<bool>(pawn_entity, fields_.has_death_info);
+	key.death_time = field<float>(pawn_entity, fields_.death_time);
+	key.death_info_time = field<float>(pawn_entity, fields_.death_info_time);
+	if (live != nullptr && key.alive && !key.spawning && (key.team == k_team_t || key.team == k_team_ct))
+	{
+		live->pawn = pawn_entity;
+		live->pawn_entity = key.pawn_entity;
+		live->team = key.team;
+	}
+	return key;
+}
+
+weapon_muzzle_class plugin::active_weapon_muzzle_class(CGameEntitySystem *system, CEntityInstance *pawn_entity) const
+{
+	if (system == nullptr || pawn_entity == nullptr || !weapon_item_schema_available_)
+	{
+		return weapon_muzzle_class::none;
+	}
+	void *services = field<void *>(pawn_entity, fields_.weapon_services);
+	if (services == nullptr)
+	{
+		return weapon_muzzle_class::none;
+	}
+	const CEntityHandle active_weapon = field<CEntityHandle>(services, fields_.active_weapon);
+	CEntityInstance *weapon = active_weapon.IsValid() ? system->GetEntityInstance(active_weapon) : nullptr;
+	if (weapon == nullptr)
+	{
+		return weapon_muzzle_class::none;
+	}
+	void *attribute_manager = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(weapon) + fields_.attribute_manager);
+	void *item = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(attribute_manager) + fields_.item);
+	const uint16_t definition = field<uint16_t>(item, fields_.item_definition_index);
+	return weapon_muzzle_class_from_item_definition(definition);
+}
+
+void plugin::refresh_aux_visual_cache(CGameEntitySystem *system)
+{
+	aux_visual_count_ = 0;
+	if (system == nullptr || !owner_effect_schema_available_)
+	{
+		return;
+	}
+	CEntityIdentity *identity = system->m_EntityList.m_pFirstActiveEntity;
+	for (uint32_t scanned = 0; identity != nullptr && scanned < k_entity_scan_hard_limit; identity = identity->m_pNext, ++scanned)
+	{
+		CEntityInstance *entity = identity->m_pInstance;
+		const int edict = entity_index(entity);
+		if (!valid_networked_edict_index(edict))
+		{
+			continue;
+		}
+		const CEntityHandle child = entity_handle(entity);
+		const CEntityHandle owner = field<CEntityHandle>(entity, fields_.owner_entity);
+		const CEntityHandle effect = field<CEntityHandle>(entity, fields_.effect_entity);
+		if (!child.IsValid() || (!owner.IsValid() && !effect.IsValid()))
+		{
+			continue;
+		}
+		if (aux_visual_count_ >= aux_visual_entities_.size())
+		{
+			break;
+		}
+		aux_visual_entity &record = aux_visual_entities_[aux_visual_count_++];
+		record.child = child;
+		record.owner = owner;
+		record.effect = effect;
+		record.edict = edict;
+		copy_entity_name(entity, record.name);
+	}
+}
+
+bool plugin::collect_player_visual_group(CGameEntitySystem *system, CEntityInstance *pawn_entity, visual_entity_group &group) const
+{
+	hidden_group_clear(group);
+	if (system == nullptr || pawn_entity == nullptr)
+	{
+		return false;
+	}
+	void *services = field<void *>(pawn_entity, fields_.weapon_services);
+	if (services == nullptr)
+	{
+		return false;
+	}
+	const auto collect_handle = [&](CEntityHandle handle)
+	{
+		if (!handle.IsValid())
+		{
+			return true;
+		}
+		if (!valid_networked_edict_index(resolve_entity_index(system, handle)) || group.count >= group.handles.size())
+		{
+			return false;
+		}
+		group.handles[group.count++] = handle;
+		return true;
+	};
+	const auto collect_vector = [&](void *base, uint32_t offset, int max_count)
+	{
+		auto *handles = reinterpret_cast<CUtlVector<CEntityHandle> *>(reinterpret_cast<uintptr_t>(base) + offset);
+		const int count = handles->Count();
+		if (count < 0 || count > max_count)
+		{
+			return false;
+		}
+		for (int item = 0; item < count; ++item)
+		{
+			if (!collect_handle((*handles)[item]))
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+	group.source = entity_handle(pawn_entity);
+	if (!group.source.IsValid()
+		|| !collect_handle(group.source)
+		|| !collect_handle(field<CEntityHandle>(services, fields_.active_weapon))
+		|| !collect_handle(field<CEntityHandle>(services, fields_.last_weapon))
+		|| !collect_vector(services, fields_.weapons, static_cast<int>(k_max_weapons))
+		|| !collect_vector(pawn_entity, fields_.wearables, static_cast<int>(k_max_wearables)))
+	{
+		hidden_group_clear(group);
+		return false;
+	}
+	void *hostage_services = field<void *>(pawn_entity, fields_.hostage_services);
+	if (hostage_services != nullptr && !collect_handle(field<CEntityHandle>(hostage_services, fields_.carried_hostage_prop)))
+	{
+		hidden_group_clear(group);
+		return false;
+	}
+	if (!hidden_group_append_owner_effect_links(group, aux_visual_entities_.data(), aux_visual_count_, [&](CEntityHandle handle)
+	{
+		return valid_networked_edict_index(resolve_entity_index(system, handle));
+	}))
+	{
+		hidden_group_clear(group);
+		return false;
+	}
+	return group.count != 0;
+}
+
+bool plugin::capture(visibility_snapshot &value)
+{
+	CGameEntitySystem *system = entity_system();
+	if (system == nullptr)
+	{
+		return false;
+	}
+	value.sequence = ++snapshot_sequence_;
+	value.captured = std::chrono::steady_clock::now();
+	const auto now = value.captured;
+	std::array<lifecycle_key, k_max_players> keys;
+	std::array<bool, k_max_players> stable_slots {};
+	std::lock_guard<std::mutex> lock(transmit_state_mutex_);
+	refresh_aux_visual_cache(system);
+	for (uint32_t slot = 0; slot < k_max_players; ++slot)
+	{
+		live_player live;
+		const lifecycle_key key = player_lifecycle(slot, system, &live);
+		keys[slot] = key;
+		const bool stable = live.pawn != nullptr;
+		stable_slots[slot] = stable;
+		update_lifecycle_guard(lifecycle_[slot], key, stable, now, k_lifecycle_fail_open);
+		if (!stable || !lifecycle_allows_hiding(lifecycle_[slot], now))
+		{
+			continue;
+		}
+		CEntityInstance *pawn_entity = live.pawn;
+		void *body_component = field<void *>(pawn_entity, fields_.body_component);
+		void *scene_node = body_component == nullptr ? nullptr : field<void *>(body_component, fields_.scene_node);
+		void *collision = field<void *>(pawn_entity, fields_.collision);
+		if (scene_node == nullptr || collision == nullptr)
+		{
+			continue;
+		}
+		player_state &player = value.players[slot];
+		player.valid = true;
+		player.team = live.team;
+		player.pawn_entity = live.pawn_entity;
+		player.origin = to_vec3(field<Vector>(scene_node, fields_.abs_origin));
+		player.velocity = to_vec3(field<Vector>(pawn_entity, fields_.abs_velocity));
+		player.mins = to_vec3(field<Vector>(collision, fields_.mins));
+		player.maxs = to_vec3(field<Vector>(collision, fields_.maxs));
+		void *view = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(pawn_entity) + fields_.view_offset);
+		player.eye = {player.origin.x + field<float>(view, fields_.view_x), player.origin.y + field<float>(view, fields_.view_y), player.origin.z + field<float>(view, fields_.view_z)};
+		player.eye_yaw_degrees = field<qangle>(pawn_entity, fields_.eye_angles).y;
+		player.muzzle_class = active_weapon_muzzle_class(system, pawn_entity);
+		if (INetChannelInfo *channel = engine_->GetPlayerNetInfo(CPlayerSlot(static_cast<int>(slot))); channel != nullptr)
+		{
+			player.rtt_seconds = std::max(0.0f, channel->GetEngineLatency());
+		}
+	}
+	for (uint32_t observer = 0; observer < k_max_players; ++observer)
+	{
+		for (uint32_t target = 0; target < k_max_players; ++target)
+		{
+			if (update_pair_guard(pair_guards_[observer][target], keys[observer], stable_slots[observer],
+				keys[target], stable_slots[target], now, k_pair_baseline_warmup)
+				&& (awaiting_full_update_[observer][target] || hidden_groups_[observer][target].count != 0))
+			{
+				awaiting_full_update_[observer][target] = false;
+				hidden_group_clear(hidden_groups_[observer][target]);
+			}
+		}
+	}
+	return true;
+}
+
+} // namespace cs2fow
