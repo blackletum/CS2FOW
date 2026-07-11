@@ -54,6 +54,9 @@ CConVar<int> cs2fow_base_lookahead_ms("cs2fow_base_lookahead_ms", FCVAR_NONE, "F
 CConVar<float> cs2fow_rtt_lookahead_scale("cs2fow_rtt_lookahead_scale", FCVAR_NONE, "Recipient RTT multiplier for movement lookahead", 1.5f, true, 0.0f, true, 4.0f);
 CConVar<int> cs2fow_max_lookahead_ms("cs2fow_max_lookahead_ms", FCVAR_NONE, "Maximum movement and latency lookahead", 375, true, 0, true, 500);
 CConVar<float> cs2fow_max_prediction_units("cs2fow_max_prediction_units", FCVAR_NONE, "Maximum predicted movement per player", 96.0f, true, 0.0f, true, 256.0f);
+CConVar<float> cs2fow_shoulder_base_units("cs2fow_shoulder_base_units", FCVAR_NONE, "Minimum sideways shoulder origin distance", 24.0f, true, 0.0f, true, 256.0f);
+CConVar<float> cs2fow_shoulder_rtt_scale("cs2fow_shoulder_rtt_scale", FCVAR_NONE, "Sideways shoulder units per millisecond of recipient RTT", 0.64f, true, 0.0f, true, 4.0f);
+CConVar<float> cs2fow_max_shoulder_units("cs2fow_max_shoulder_units", FCVAR_NONE, "Maximum sideways shoulder origin distance", 128.0f, true, 0.0f, true, 256.0f);
 CConVar<int> cs2fow_visibility_hold_ms("cs2fow_visibility_hold_ms", FCVAR_NONE, "Minimum revealed duration", 16, true, 0, true, 1000);
 CConVar<bool> cs2fow_debug("cs2fow_debug", FCVAR_NONE, "Enable CS2FOW diagnostic logging", false);
 
@@ -440,7 +443,10 @@ void plugin::hook_game_frame(bool simulating, bool first_tick, bool last_tick)
 		static_cast<uint32_t>(cs2fow_base_lookahead_ms.Get()),
 		cs2fow_rtt_lookahead_scale.Get(),
 		static_cast<uint32_t>(cs2fow_max_lookahead_ms.Get()),
-		cs2fow_max_prediction_units.Get()
+		cs2fow_max_prediction_units.Get(),
+		cs2fow_shoulder_base_units.Get(),
+		cs2fow_shoulder_rtt_scale.Get(),
+		cs2fow_max_shoulder_units.Get()
 	});
 }
 

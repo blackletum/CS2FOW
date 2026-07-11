@@ -55,7 +55,7 @@ They are not visibility blockers in the current preview. CS2FOW checks baked sta
 
 ### How does it avoid enemies appearing too late around corners?
 
-The worker checks body points, bounding-box corners, and the held weapon muzzle. Movement prediction starts gradually above 75 units per second and is fully active at 100. It looks ahead by 75 ms plus 1.5 times the recipient's current round-trip latency, capped at 375 ms and 96 movement units per player. A 16 ms hold reduces one-tick corner flicker.
+The worker checks body points, bounding-box corners, and the held weapon muzzle. Movement prediction starts gradually above 75 units per second and is fully active at 100. It looks ahead by 75 ms plus 1.5 times the recipient's current round-trip latency, capped at 375 ms and 96 movement units per player. Left/right shoulder origins also grow with recipient RTT from 24 to 128 units by default. A 16 ms hold reduces one-tick corner flicker.
 
 When the worker sees an enemy again, CS2FOW stops removing that enemy from normal snapshots immediately.
 
@@ -141,10 +141,13 @@ Defaults in `cfg/cs2fow.cfg` are:
 | `cs2fow_rtt_lookahead_scale` | `1.5` | Multiplier applied to the recipient's current round-trip latency. |
 | `cs2fow_max_lookahead_ms` | `375` | Maximum movement/latency lookahead. Set to `0` to disable movement prediction. |
 | `cs2fow_max_prediction_units` | `96` | Maximum predicted movement for each player. Set to `0` to disable movement prediction. |
+| `cs2fow_shoulder_base_units` | `24` | Minimum left/right shoulder-origin distance. |
+| `cs2fow_shoulder_rtt_scale` | `0.64` | Shoulder units added per millisecond of recipient RTT. |
+| `cs2fow_max_shoulder_units` | `128` | Maximum left/right shoulder-origin distance. |
 | `cs2fow_visibility_hold_ms` | `16` | Minimum time a newly visible pair stays visible. |
 | `cs2fow_debug` | `0` | Collect real primary-list clears for later inspection. |
 
-Existing custom configs must update the previous `50`/`150` lookahead defaults and add `cs2fow_rtt_lookahead_scale` and `cs2fow_max_prediction_units`. Older configs must also replace `cs2fow_min_lookahead_ms` with `cs2fow_base_lookahead_ms` and remove `cs2fow_peek_margin_units`.
+Existing custom configs must update the previous `50`/`150` lookahead defaults and add the RTT, prediction-distance, and shoulder controls shown above. Older configs must also replace `cs2fow_min_lookahead_ms` with `cs2fow_base_lookahead_ms` and remove `cs2fow_peek_margin_units`.
 
 Automatic baking needs write access to `addons/cs2fow/data/maps`. On Linux, the packaged baker and VRF program must remain executable.
 
@@ -172,6 +175,7 @@ Important limits:
 
 - Visibility uses baked static map geometry. Smokes, doors, breakables, props, particles, projectiles, and other moving blockers are not occluders.
 - Movement prediction targets normal competitive/casual CS2 movement. It ramps from zero between 75 and 100 horizontal units per second, caps speed at 350, and caps each player's offset at 96 units, so surf, KZ, and unusually fast boosts can appear late.
+- Shoulder origins deliberately widen with recipient RTT to reduce high-ping corner pop-in. Larger values reveal enemies farther around corners, including while the recipient is stationary.
 - Sound events, bomb information, teammate information, and other non-entity clues are not filtered.
 - Version 2 and older BVH8 files are rejected. The plugin automatically rebakes when it can and remains fail open otherwise.
 - `CheckTransmit` changes only `m_pTransmitEntity`, the verified primary send list. Full-update snapshots are never filtered.

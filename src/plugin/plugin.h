@@ -229,6 +229,9 @@ extern CConVar<int> cs2fow_base_lookahead_ms;
 extern CConVar<float> cs2fow_rtt_lookahead_scale;
 extern CConVar<int> cs2fow_max_lookahead_ms;
 extern CConVar<float> cs2fow_max_prediction_units;
+extern CConVar<float> cs2fow_shoulder_base_units;
+extern CConVar<float> cs2fow_shoulder_rtt_scale;
+extern CConVar<float> cs2fow_max_shoulder_units;
 extern CConVar<int> cs2fow_visibility_hold_ms;
 extern CConVar<bool> cs2fow_debug;
 

@@ -17,7 +17,6 @@ constexpr float k_prediction_ramp_start_speed = 75.0f;
 constexpr float k_prediction_ramp_full_speed = 100.0f;
 constexpr float k_horizontal_bounds_padding = 8.0f;
 constexpr float k_top_bounds_padding = 8.0f;
-constexpr float k_shoulder_origin_offset = 24.0f;
 constexpr float k_vertical_origin_offset = 24.0f;
 constexpr float k_same_point_epsilon_sq = 1.0e-4f;
 constexpr uint32_t k_wall_clip_steps = 8;
@@ -193,6 +192,14 @@ float visibility_effective_lookahead_seconds(float rtt_seconds, const visibility
 	return std::clamp(wanted_ms, 0.0f, static_cast<float>(tuning.max_lookahead_ms)) / 1000.0f;
 }
 
+float visibility_shoulder_offset_units(float rtt_seconds, const visibility_tuning &tuning)
+{
+	const float base = std::max(0.0f, tuning.shoulder_base_units);
+	const float maximum = std::max(base, tuning.max_shoulder_units);
+	const float wanted = std::max(0.0f, rtt_seconds) * 1000.0f * std::max(0.0f, tuning.shoulder_rtt_scale);
+	return std::clamp(wanted, base, maximum);
+}
+
 vec3 visibility_prediction_offset(vec3 velocity, float seconds, float max_prediction_units)
 {
 	if (seconds <= 0.0f || max_prediction_units <= 0.0f)
@@ -296,11 +303,11 @@ float weapon_muzzle_length(weapon_muzzle_class value)
 }
 
 std::array<vec3, k_visibility_origin_count> visibility_origins(const bvh8_data &data, const visibility_player &player,
-	float lookahead_seconds, float max_prediction_units)
+	float lookahead_seconds, const visibility_tuning &tuning)
 {
 	const vec3 predicted = visibility_clip_destination(data, player.eye,
-		add(player.eye, visibility_prediction_offset(player.velocity, lookahead_seconds, max_prediction_units)));
-	const vec3 shoulder = scale(eye_right(player.eye_yaw_degrees), k_shoulder_origin_offset);
+		add(player.eye, visibility_prediction_offset(player.velocity, lookahead_seconds, tuning.max_prediction_units)));
+	const vec3 shoulder = scale(eye_right(player.eye_yaw_degrees), visibility_shoulder_offset_units(player.rtt_seconds, tuning));
 	const vec3 left = subtract(player.eye, shoulder);
 	const vec3 right = add(player.eye, shoulder);
 	const vec3 predicted_left = subtract(predicted, shoulder);

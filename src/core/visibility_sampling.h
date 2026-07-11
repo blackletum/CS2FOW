@@ -43,6 +43,9 @@ struct visibility_tuning
 	float rtt_lookahead_scale {1.5f};
 	uint32_t max_lookahead_ms {375};
 	float max_prediction_units {96.0f};
+	float shoulder_base_units {24.0f};
+	float shoulder_rtt_scale {0.64f};
+	float max_shoulder_units {128.0f};
 };
 
 struct visibility_target_points
@@ -52,12 +55,13 @@ struct visibility_target_points
 };
 
 float visibility_effective_lookahead_seconds(float rtt_seconds, const visibility_tuning &tuning);
+float visibility_shoulder_offset_units(float rtt_seconds, const visibility_tuning &tuning);
 vec3 visibility_prediction_offset(vec3 velocity, float seconds, float max_prediction_units);
 vec3 visibility_clip_destination(const bvh8_data &data, vec3 origin, vec3 destination);
 weapon_muzzle_class weapon_muzzle_class_from_item_definition(uint16_t item_definition);
 float weapon_muzzle_length(weapon_muzzle_class value);
 std::array<vec3, k_visibility_origin_count> visibility_origins(const bvh8_data &data, const visibility_player &player,
-	float lookahead_seconds, float max_prediction_units);
+	float lookahead_seconds, const visibility_tuning &tuning);
 visibility_target_points visibility_targets(const bvh8_data &data, const visibility_player &player,
 	float lookahead_seconds, float max_prediction_units);
 

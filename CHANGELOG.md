@@ -6,6 +6,7 @@
 - Restricted filtering to CS2's verified primary transmit list and left full-update snapshots untouched.
 - Let visible enemies return through ordinary snapshots instead of waiting for CS2 to schedule a full update.
 - Tuned movement preload to a 75 ms base plus 1.5 times recipient RTT, capped at 375 ms and 96 units per player, with a smooth 75-100 speed ramp.
+- Made left/right shoulder origins scale from 24 to 128 units with recipient RTT through public tuning controls.
 - Kept safe movement up to baked walls, replaced merged target boxes with separate current/future boxes, and corrected stale-result age to use snapshot capture time.
 - Added fixed-size `cs2fow_entity` evidence for real primary-bit clears, including direct and owner/effect-linked membership.
 - Hardened player lifecycles, visual-group identity, linked entities, stale results, and fail-open resets.

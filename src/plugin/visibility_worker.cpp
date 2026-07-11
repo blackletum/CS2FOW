@@ -114,7 +114,7 @@ void visibility_worker::run()
 				recipient_lookahead[recipient] = visibility_effective_lookahead_seconds(current.players[recipient].rtt_seconds, tuning);
 				result->recipient_lookahead_seconds[recipient] = recipient_lookahead[recipient];
 				recipient_origins[recipient] = visibility_origins(*data_, sample_player(current.players[recipient]),
-					recipient_lookahead[recipient], tuning.max_prediction_units);
+					recipient_lookahead[recipient], tuning);
 			}
 		}
 		for (uint32_t recipient = 0; recipient < k_max_players; ++recipient)
