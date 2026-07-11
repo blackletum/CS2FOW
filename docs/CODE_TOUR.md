@@ -100,7 +100,7 @@ The game thread runs `hook_game_frame`. At most once per configured interval (de
 
 For each living enemy pair the worker:
 
-- makes eight recipient origins: current/predicted eye, left/right shoulders, predicted shoulders, and current/predicted upward points;
+- makes eight recipient origins: current/predicted eye, RTT-scaled left/right shoulders, predicted shoulders, and current/predicted upward points;
 - makes target samples from padded AABB corners, fifteen tuned body points, and a held-weapon muzzle point;
 - clips movement at baked walls and adds separate current/future boxes, body points, and muzzle points when useful movement remains;
 - casts at most `8 x 48 = 384` rays, stopping at the first open ray;
