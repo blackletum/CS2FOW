@@ -97,7 +97,7 @@ When a living enemy is fully behind solid map geometry, CS2FOW may remove that e
 
 This removes the main live position data used by wallhacks. It does not make every form of cheating impossible: sound, teammate information, last-known positions, and other game clues still exist.
 
-Live smoke also blocks visibility rays. An HE detonation opens a 100-unit viewing channel through an affected smoke for three seconds by default. Baked walls between the blast and sight line still block that opening, and overlapping smoke clouds are checked separately.
+Live smoke also blocks visibility rays. An HE detonation opens a 100-unit viewing channel through an affected smoke for 2.5 seconds by default. Baked walls between the blast and sight line still block that opening, and overlapping smoke clouds are checked separately.
 
 HLTV, spectators, dead players, and a player viewing themself are not filtered. Teammates remain unfiltered by default; `cs2fow_filter_teammates 1` applies the same visibility rules to their complete visual groups and may also remove client-side teammate markers and radar information.
 
@@ -142,7 +142,7 @@ Defaults in `cfg/cs2fow.cfg` are:
 | `cs2fow_enable` | `1` | Enable filtering when all required data is valid. |
 | `cs2fow_smoke_occlusion` | `1` | Use CS2's live smoke grid. Smoke alone fails open if private smoke data is unavailable. |
 | `cs2fow_he_clear_radius_units` | `100` | Radius of the temporary viewing channel created by an HE. Set to `0` to disable HE clearing. |
-| `cs2fow_he_clear_seconds` | `3.0` | Seconds before an HE-created viewing channel closes. Set to `0` to disable HE clearing. |
+| `cs2fow_he_clear_seconds` | `2.5` | Seconds before an HE-created viewing channel closes. Set to `0` to disable HE clearing. |
 | `cs2fow_filter_teammates` | `0` | Apply the same visibility filtering to living teammates. |
 | `cs2fow_update_interval_ms` | `1` | Minimum time between player snapshots sent to the worker. |
 | `cs2fow_base_lookahead_ms` | `75` | Fixed movement lookahead before the RTT contribution. |

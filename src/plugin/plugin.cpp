@@ -103,7 +103,7 @@ CConVar<bool> cs2fow_enable("cs2fow_enable", FCVAR_NONE, "Enable CS2FOW when map
 CConVar<bool> cs2fow_smoke_occlusion("cs2fow_smoke_occlusion", FCVAR_NONE, "Use live CS2 smoke for visibility", true, on_cs2fow_enable_changed);
 CConVar<float> cs2fow_he_clear_radius_units("cs2fow_he_clear_radius_units", FCVAR_NONE, "HE-cleared smoke channel radius", 100.0f,
 	true, 0.0f, true, 320.0f, on_cs2fow_float_changed);
-CConVar<float> cs2fow_he_clear_seconds("cs2fow_he_clear_seconds", FCVAR_NONE, "HE-cleared smoke channel duration", 3.0f,
+CConVar<float> cs2fow_he_clear_seconds("cs2fow_he_clear_seconds", FCVAR_NONE, "HE-cleared smoke channel duration", 2.5f,
 	true, 0.0f, true, 10.0f, on_cs2fow_float_changed);
 CConVar<bool> cs2fow_filter_teammates("cs2fow_filter_teammates", FCVAR_NONE, "Apply visibility filtering to teammates", false, on_cs2fow_enable_changed);
 CConVar<int> cs2fow_update_interval_ms("cs2fow_update_interval_ms", FCVAR_NONE, "Visibility worker update interval", 1, true, 1, true, 250);
