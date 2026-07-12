@@ -149,7 +149,12 @@ bool process_alive(uint64_t pid)
 	CloseHandle(process);
 	return alive;
 #else
-	return kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH;
+	if (kill(static_cast<pid_t>(pid), 0) != 0) return errno != ESRCH;
+	std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+	std::string line;
+	std::getline(stat, line);
+	const size_t state = line.rfind(") ");
+	return state == std::string::npos || state + 2 >= line.size() || line[state + 2] != 'Z';
 #endif
 }
 
