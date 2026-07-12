@@ -176,10 +176,6 @@ bool plugin::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxlen, bool l
 				SH_MEMBER(this, &plugin::hook_load_events_from_file), true);
 		}
 	}
-	if (game_events_ != nullptr)
-	{
-		he_event_available_ = game_events_->AddListener(this, "hegrenade_detonate", true);
-	}
 	if (!prerequisites_valid_)
 	{
 		disable(avx ? reason : "AVX and OS AVX state are required");
@@ -217,10 +213,6 @@ bool plugin::Unload(char *error, size_t max_length)
 int plugin::hook_load_events_from_file(const char *, bool)
 {
 	game_events_ = META_IFACEPTR(IGameEventManager2);
-	if (!he_event_available_ && game_events_ != nullptr)
-	{
-		he_event_available_ = game_events_->AddListener(this, "hegrenade_detonate", true);
-	}
 	RETURN_META_VALUE(MRES_IGNORED, 0);
 }
 
@@ -534,6 +526,10 @@ void plugin::change_map(const std::string &map)
 
 void plugin::hook_game_frame(bool simulating, bool first_tick, bool last_tick)
 {
+	if (!he_event_available_ && game_events_ != nullptr)
+	{
+		he_event_available_ = game_events_->AddListener(this, "hegrenade_detonate", true);
+	}
 	INetworkGameServer *network_server = g_pNetworkServerService == nullptr ? nullptr : g_pNetworkServerService->GetIGameServer();
 	if (network_server == nullptr)
 	{
