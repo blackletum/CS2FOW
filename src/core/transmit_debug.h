@@ -126,12 +126,4 @@ private:
 	size_t next_ {};
 };
 
-template <typename mask_type>
-inline bool clear_transmit_bit(mask_type &mask, int index, bool debug)
-{
-	const bool record = debug && mask.IsBitSet(index);
-	mask.Clear(index);
-	return record;
-}
-
 } // namespace cs2fow

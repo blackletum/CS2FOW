@@ -8,12 +8,13 @@
 - Matched visible smoke timing more closely by delaying initial occlusion and revealing fading smoke 0.5 seconds earlier.
 - Added optional teammate visibility filtering with the same wall, smoke, prediction, and full-group rules used for enemies.
 - Reorganized the runtime into map/game-state, worker, transmit, and automatic-baker responsibilities without intentionally changing proven visibility behavior.
-- Restricted filtering to CS2's verified primary transmit list and left full-update snapshots untouched.
+- Updated CheckTransmit hiding to set CS2's matching `dont_transmit` bit before clearing a set primary transmit bit; missing lists fail open, while full updates and the other mask storage remain untouched.
+- Bundled `sv_enable_donttransmit 0` as the compatibility default and automatically execute `cs2fow.cfg` after convar registration and at every map start; paired-list handling also supports mode `1`.
 - Let visible enemies return through ordinary snapshots instead of waiting for CS2 to schedule a full update.
 - Tuned movement preload to a 75 ms base plus 1.5 times recipient RTT, capped at 375 ms and 96 units per player, with a smooth 75-100 speed ramp.
 - Made left/right shoulder origins scale from 24 to 128 units with recipient RTT through public tuning controls.
 - Kept safe movement up to baked walls, replaced merged target boxes with separate current/future boxes, and corrected stale-result age to use snapshot capture time.
-- Added fixed-size `cs2fow_entity` evidence for real primary-bit clears, including direct and owner/effect-linked membership.
+- Added fixed-size `cs2fow_entity` evidence for entity bits actually hidden by CS2FOW, including direct and owner/effect-linked membership.
 - Hardened player lifecycles, visual-group identity, linked entities, stale results, and fail-open resets.
 - Bound private gamedata to verified Windows and Linux server binaries and rejected unsafe player numbers before ray casting.
 - Added snapshot-capture and CheckTransmit timings, full networked-edict linked-visual coverage, and accurate active-HE status wording.

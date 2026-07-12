@@ -184,6 +184,7 @@ bool plugin::Load(PluginId id, ISmmAPI *ismm, char *error, size_t maxlen, bool l
 		game_events_ = static_cast<IGameEventManager2 *>(ismm->VInterfaceMatch(ismm->GetServerFactory(), k_game_event_manager_interface));
 	}
 	META_CONVAR_REGISTER(FCVAR_RELEASE | FCVAR_GAMEDLL);
+	engine_->ServerCommand("exec cs2fow.cfg");
 	g_SMAPI->AddListener(this, this);
 
 	std::string reason;
@@ -253,6 +254,7 @@ void plugin::FireGameEvent(IGameEvent *event)
 
 void plugin::OnLevelInit(char const *map_name, char const *, char const *, char const *, bool, bool)
 {
+	engine_->ServerCommand("exec cs2fow.cfg");
 	if (map_name != nullptr && map_name[0] != '\0')
 	{
 		change_map(map_name);

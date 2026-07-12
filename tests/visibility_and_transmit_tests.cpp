@@ -679,6 +679,21 @@ void test_pair_guard()
 	assert(pair_allows_hiding(guard, start + std::chrono::milliseconds(7500), 8));
 }
 
+struct test_transmit_mask
+{
+	bool set {};
+	int sets {};
+	int clears {};
+	int checked_index {-1};
+	int set_index {-1};
+	int cleared_index {-1};
+	std::vector<char> *operations {};
+
+	bool IsBitSet(int index) { checked_index = index; return set; }
+	void Set(int index) { ++sets; set_index = index; set = true; if (operations != nullptr) operations->push_back('S'); }
+	void Clear(int index) { ++clears; cleared_index = index; set = false; if (operations != nullptr) operations->push_back('C'); }
+};
+
 void test_checktransmit_private_offsets()
 {
 	uint32_t value {};
@@ -695,6 +710,33 @@ void test_checktransmit_private_offsets()
 	assert(!read_checktransmit_full_update(&info, 32));
 	info.full_update = true;
 	assert(read_checktransmit_full_update(&info, 32));
+
+	test_transmit_mask null_primary_dont;
+	assert(!withhold_transmit_bit<test_transmit_mask>(nullptr, &null_primary_dont, 10));
+	assert(!null_primary_dont.set && null_primary_dont.sets == 0);
+	test_transmit_mask null_dont_primary {true};
+	assert(!withhold_transmit_bit(&null_dont_primary, static_cast<test_transmit_mask *>(nullptr), 10));
+	assert(null_dont_primary.set && null_dont_primary.clears == 0);
+
+	test_transmit_mask unset_primary;
+	test_transmit_mask untouched_dont;
+	assert(!withhold_transmit_bit(&unset_primary, &untouched_dont, 10));
+	assert(unset_primary.clears == 0 && !untouched_dont.set && untouched_dont.sets == 0);
+
+	std::vector<char> operations;
+	test_transmit_mask primary {true};
+	test_transmit_mask dont_transmit;
+	primary.operations = &operations;
+	dont_transmit.operations = &operations;
+	assert(withhold_transmit_bit(&primary, &dont_transmit, 10));
+	assert(!primary.set && primary.clears == 1 && dont_transmit.set && dont_transmit.sets == 1);
+	assert(primary.checked_index == 10 && primary.cleared_index == 10 && dont_transmit.set_index == 10);
+	assert(operations == std::vector<char>({'S', 'C'}));
+
+	test_transmit_mask primary_again {true};
+	test_transmit_mask already_dont_transmit {true};
+	assert(withhold_transmit_bit(&primary_again, &already_dont_transmit, 10));
+	assert(!primary_again.set && already_dont_transmit.set && already_dont_transmit.sets == 1);
 }
 
 void test_transmit_debug()
@@ -704,43 +746,26 @@ void test_transmit_debug()
 	assert(transmit_member_from_links(false, true) == transmit_member_kind::effect_link);
 	assert(transmit_member_from_links(true, true) == transmit_member_kind::owner_effect_link);
 
-	struct test_mask
-	{
-		bool set {};
-		int checks {};
-		int clears {};
-
-		bool IsBitSet(int)
-		{
-			++checks;
-			return set;
-		}
-
-		void Clear(int)
-		{
-			++clears;
-			set = false;
-		}
-	};
-
-	test_mask mask {true};
-	assert(!clear_transmit_bit(mask, 10, false));
-	assert(mask.checks == 0 && mask.clears == 1 && !mask.set);
-	assert(!clear_transmit_bit(mask, 10, true));
-	assert(mask.checks == 1 && mask.clears == 2);
-	mask.set = true;
-	assert(clear_transmit_bit(mask, 10, true));
-	assert(mask.checks == 2 && mask.clears == 3 && !mask.set);
-
 	using clock = std::chrono::steady_clock;
 	const auto start = clock::time_point {} + std::chrono::seconds(10);
 	transmit_debug_log<2, 16> log;
 	transmit_debug_event first {10, 100, 1, 0, 0, 1, transmit_member_kind::direct, k_transmit_reason_current, start};
-	log.record(first, "player");
+	test_transmit_mask primary {true};
+	test_transmit_mask dont_transmit;
+	const auto clear_and_record = [&](bool debug)
+	{
+		if (withhold_transmit_bit(&primary, &dont_transmit, 10) && debug) log.record(first, "player");
+	};
+	clear_and_record(true);
+	clear_and_record(true);
+	primary.set = true;
+	clear_and_record(false);
+	assert(log.records()[0].clears == 1);
+	primary.set = true;
 	first.recipient_slot = 3;
 	first.reason = k_transmit_reason_quarantine;
 	first.when += std::chrono::milliseconds(5);
-	log.record(first, "player");
+	clear_and_record(true);
 	const auto &records = log.records();
 	assert(records[0].valid && records[0].clears == 2 && records[0].recipients == ((uint64_t {1} << 1) | (uint64_t {1} << 3)));
 	assert(records[0].reasons == (k_transmit_reason_current | k_transmit_reason_quarantine));

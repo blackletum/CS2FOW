@@ -213,8 +213,8 @@ private:
 		std::array<CEntityInstance *, k_max_smoke_volumes> &smokes, size_t &smoke_count, bool &smoke_overflow);
 	bool collect_player_visual_group(CGameEntitySystem *system, CEntityInstance *pawn, visual_entity_group &group) const;
 	bool group_fully_marked(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits, const visual_entity_group &group) const;
-	void clear_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits, const visual_entity_group &group,
-		int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
+	void withhold_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *primary, CBitVec<MAX_EDICTS> *dont_transmit,
+		const visual_entity_group &group, int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
 	void record_hidden_entity(CGameEntitySystem *system, size_t member_index, int edict, const visual_entity_group &group,
 		int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
 	bool capture(visibility_snapshot &value, float game_time);

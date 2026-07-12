@@ -93,7 +93,7 @@ The plugin also verifies that its private gamedata matches the loaded CS2 server
 
 CS2FOW runs only on the server. Players install nothing.
 
-When a living enemy is fully behind solid map geometry, CS2FOW may remove that enemy's current visual group from the primary entity-send list for one recipient. The visual group includes the pawn, weapons, wearables, a carried hostage prop, and directly linked owner/effect entities found by the plugin. The enemy still exists on the server, so movement, hit registration, damage, wall penetration, and game rules continue normally.
+When a living enemy is fully behind solid map geometry, CS2FOW may withhold that enemy's current visual group from one recipient's normal snapshot. The visual group includes the pawn, weapons, wearables, a carried hostage prop, and directly linked owner/effect entities found by the plugin. For each entity CS2FOW actually hides, it marks the matching `dont_transmit` bit before removing the primary send bit. If either list is unavailable, it leaves the entity visible. The enemy still exists on the server, so movement, hit registration, damage, wall penetration, and game rules continue normally.
 
 This removes the main live position data used by wallhacks. It does not make every form of cheating impossible: sound, teammate information, last-known positions, and other game clues still exist.
 
@@ -108,7 +108,7 @@ HLTV, spectators, dead players, and a player viewing themself are not filtered. 
 3. **Collect player points:** copy each living player's position, movement, body bounds, eye direction, latency, and held-weapon class on the game thread.
 4. **Cast rays:** a background worker checks eight safe recipient points against up to forty-eight target points. Targets include separate current and future axis-aligned bounding box corners, fifteen custom body points, and a weapon-muzzle point. Future positions stop at baked walls instead of passing through them.
 5. **Decide visibility:** one open ray reveals the target. A short hold keeps a recently revealed target visible to reduce corner pop-in.
-6. **Withhold hidden entities:** `CheckTransmit` reads the finished decision and clears only the verified primary transmit-list bits for a hidden target's visual group.
+6. **Withhold hidden entities:** `CheckTransmit` reads the finished decision, marks each hidden entity in the verified `dont_transmit` list, then clears its matching primary send bit.
 
 The worker receives copied numbers only. It never reads live CS2 objects.
 
@@ -139,6 +139,7 @@ Defaults in `cfg/cs2fow.cfg` are:
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
+| `sv_enable_donttransmit` | `0` | Use Valve's compatibility mode. CS2FOW's paired-list handling also supports mode `1`. |
 | `cs2fow_enable` | `1` | Enable filtering when all required data is valid. |
 | `cs2fow_smoke_occlusion` | `1` | Use CS2's live smoke grid. Smoke alone fails open if private smoke data is unavailable. |
 | `cs2fow_he_clear_radius_units` | `100` | Radius of the temporary viewing channel created by an HE. Set to `0` to disable HE clearing. |
@@ -153,9 +154,11 @@ Defaults in `cfg/cs2fow.cfg` are:
 | `cs2fow_shoulder_rtt_scale` | `0.64` | Shoulder units added per millisecond of recipient RTT. |
 | `cs2fow_max_shoulder_units` | `128` | Maximum left/right shoulder-origin distance. |
 | `cs2fow_visibility_hold_ms` | `16` | Minimum time a newly visible pair stays visible. |
-| `cs2fow_debug` | `0` | Collect real primary-list clears for later inspection. |
+| `cs2fow_debug` | `0` | Collect evidence for entity bits actually hidden by CS2FOW. |
 
-Existing custom configs must add the two HE-clearance controls shown above. They must also update the previous `50`/`150` lookahead defaults and add the RTT, prediction-distance, and shoulder controls. Older configs must replace `cs2fow_min_lookahead_ms` with `cs2fow_base_lookahead_ms` and remove `cs2fow_peek_margin_units`.
+The plugin executes `cs2fow.cfg` after registering its convars and again at every map start. Edit this file if you choose `sv_enable_donttransmit 1`; the transmit code supports both modes.
+
+Existing custom configs must add `sv_enable_donttransmit 0` and the two HE-clearance controls shown above. They must also update the previous `50`/`150` lookahead defaults and add the RTT, prediction-distance, and shoulder controls. Older configs must replace `cs2fow_min_lookahead_ms` with `cs2fow_base_lookahead_ms` and remove `cs2fow_peek_margin_units`.
 
 Automatic baking needs write access to `addons/cs2fow/data/maps`. On Linux, the packaged baker and VRF program must remain executable.
 
@@ -163,7 +166,7 @@ Automatic baking needs write access to `addons/cs2fow/data/maps`. On Linux, the 
 
 `cs2fow_status` prints whether the plugin is active, why it is fail open when inactive, map and bake details, worker, snapshot-capture, and CheckTransmit timings, true snapshot age, pair counts, smoke and HE-event availability, active HE events, teammate-filtering state, and automatic-bake progress.
 
-`cs2fow_debug 1` starts silent evidence collection. It adds a record only when CS2FOW found a primary transmit bit set immediately before clearing it. It does not print every clear.
+`cs2fow_debug 1` starts silent evidence collection. The primary-bit check required for safe paired-list handling always runs; debugging only records the bits that CS2FOW actually clears and does not print every clear.
 
 Use:
 
@@ -187,7 +190,7 @@ Important limits:
 - Shoulder origins deliberately widen with recipient RTT to reduce high-ping corner pop-in. Larger values reveal enemies farther around corners, including while the recipient is stationary.
 - Sound events, bomb information, teammate information, and other non-entity clues are not filtered.
 - Version 2 and older BVH8 files are rejected. The plugin automatically rebakes when it can and remains fail open otherwise.
-- `CheckTransmit` changes only `m_pTransmitEntity`, the verified primary send list. Full-update snapshots are never filtered.
+- For each set primary bit it hides, `CheckTransmit` sets the matching verified `dont_transmit` bit first and then clears the primary bit. If either list is unavailable, it changes neither. Full-update snapshots and CS2's `+16` out-of-PVS and `+24` HLTV storage are never changed.
 - Builds and unit tests cannot reproduce a live CS2 transmit list or prove that a server will never hit a game-engine entity-copy crash. Live-server packet testing is a separate validation step.
 
 ## Troubleshooting

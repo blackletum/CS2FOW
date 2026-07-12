@@ -1,8 +1,8 @@
 #include "plugin.h"
 
-// Turns a fresh visibility result into primary-list clears for verified enemy
-// visual groups. CheckTransmit holds the plugin transmit-state lock, skips full
-// updates, allocates nothing, and fails open on stale or mismatched live state.
+// Turns a fresh visibility result into paired primary/don't-transmit updates
+// for verified enemy visual groups. CheckTransmit holds the plugin transmit-state
+// lock, skips full updates, allocates nothing, and fails open on uncertain state.
 
 #include <algorithm>
 #include <array>
@@ -109,10 +109,10 @@ void plugin::record_hidden_entity(CGameEntitySystem *system, size_t member_index
 	}, name);
 }
 
-void plugin::clear_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits,
+void plugin::withhold_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *primary, CBitVec<MAX_EDICTS> *dont_transmit,
 	const visual_entity_group &group, int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now)
 {
-	if (bits == nullptr)
+	if (primary == nullptr || dont_transmit == nullptr)
 	{
 		return;
 	}
@@ -125,7 +125,7 @@ void plugin::clear_group(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits,
 		{
 			continue;
 		}
-		if (clear_transmit_bit(*bits, index, debug))
+		if (withhold_transmit_bit(primary, dont_transmit, index) && debug)
 		{
 			record_hidden_entity(system, entity, index, group, recipient_slot, reason, now);
 		}
@@ -234,7 +234,13 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 	for (int i = 0; i < count; ++i)
 	{
 		CCheckTransmitInfo *info = infos[i];
-		if (info == nullptr || info->m_pTransmitEntity == nullptr)
+		if (info == nullptr)
+		{
+			continue;
+		}
+		// The SDK keeps its old name; current CS2 uses this as the explicit don't-transmit list.
+		CBitVec<MAX_EDICTS> *const dont_transmit = info->m_pTransmitAlways;
+		if (info->m_pTransmitEntity == nullptr || dont_transmit == nullptr)
 		{
 			continue;
 		}
@@ -293,12 +299,12 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			{
 				if (hidden_group_quarantined(stored_group, now))
 				{
-					clear_group(system, info->m_pTransmitEntity, stored_group, slot, hide_reason::quarantine, now);
+					withhold_group(system, info->m_pTransmitEntity, dont_transmit, stored_group, slot, hide_reason::quarantine, now);
 				}
 				continue;
 			}
 			hidden_group_store(stored_group, cache.group, now, k_hidden_entity_quarantine);
-			clear_group(system, info->m_pTransmitEntity, cache.group, slot, hide_reason::current, now);
+			withhold_group(system, info->m_pTransmitEntity, dont_transmit, cache.group, slot, hide_reason::current, now);
 		}
 	}
 	record_timing();

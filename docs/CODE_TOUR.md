@@ -28,6 +28,8 @@ It explains the intent of the code. The engine and file-format details are still
 
 **CheckTransmit:** the CS2 server step that decides which entity bits are present in one recipient's outgoing snapshot.
 
+**Primary and `dont_transmit` lists:** paired entity-bit lists. Hiding an entity means marking it `dont_transmit` before removing it from the primary send list.
+
 **Full update:** a refresh chosen by CS2 that sends a recipient complete entity state. CS2FOW recognizes it but never requests it.
 
 **Quarantine:** a short record of a previously hidden visual group. It prevents old linked entities from escaping during an uncertain group change.
@@ -42,10 +44,10 @@ It explains the intent of the code. The engine and file-format details are still
 
 | Path | Job |
 | --- | --- |
-| `src/plugin/plugin.cpp` | Load/unload the plugin, register commands, react to maps and frames, load valid bakes, and coordinate the other parts. |
+| `src/plugin/plugin.cpp` | Load/unload the plugin, register commands, execute its config, react to maps and frames, load valid bakes, and coordinate the other parts. |
 | `src/plugin/game_state.cpp` | Read live CS2 players and visual groups on the game thread, then make copied worker snapshots. |
 | `src/plugin/visibility_worker.*` | Own the background thread, replace pending work with the newest snapshot, cast rays, and publish results. |
-| `src/plugin/transmit.cpp` | Apply lifecycle rules and visibility results to the primary transmit list; keep natural-refresh and debug evidence state. |
+| `src/plugin/transmit.cpp` | Apply lifecycle rules and visibility results to the paired primary/`dont_transmit` lists; keep quarantine and debug evidence state. |
 | `src/plugin/automatic_baker.*` | Run and monitor the external baker without blocking the game thread. |
 | `src/core/bvh8.cpp` | Traverse an in-memory BVH8 and answer whether a line segment hits a triangle. |
 | `src/core/bvh8_format.cpp` | Validate, read, verify, and safely replace BVH8 version 3 files. |
@@ -54,8 +56,8 @@ It explains the intent of the code. The engine and file-format details are still
 | `src/core/vpk.*` | Parse VPK versions 1/2, list entries, extract them, and verify their CRCs. |
 | `src/core/map_source.*` | Find direct or nested map physics sources and validate safe map subpaths. |
 | `src/core/lifecycle_guard.h` | Fixed-size rules for player lifetimes, pair warmup, visual-group identity, and quarantine. |
-| `src/core/transmit_masks.h` | Parse gamedata numbers and read the verified private full-update flag. |
-| `src/core/transmit_debug.h` | Aggregate real primary-bit clears without allocating in `CheckTransmit`. |
+| `src/core/transmit_masks.h` | Parse gamedata numbers, read the private full-update flag, and perform the paired withhold operation. |
+| `src/core/transmit_debug.h` | Aggregate entity bits actually hidden by CS2FOW without allocating in `CheckTransmit`. |
 | `src/core/subprocess.*` | Start external tools with argument lists, timeouts, cancellation, and captured output. |
 | `src/baker/` | Command-line bake sequence and physics-GLB import. |
 | `tests/` | Small assert-based tests grouped into map/BVH and visibility/transmit responsibilities. |
@@ -76,6 +78,8 @@ It explains the intent of the code. The engine and file-format details are still
 The version 3 header is 256 bytes and records recipe version 1. Loading rejects unknown flags, nonzero reserved bytes, unsafe names, non-finite or reversed bounds, impossible counts, noncanonical offsets, wrong exact file size, and bad CRC before the data can become active.
 
 ## Map-load flow
+
+After registering convars during plugin load, and again at every map start, CS2FOW asks the server to execute `cfg/cs2fow.cfg`. The bundled file sets `sv_enable_donttransmit 0`; administrators can choose mode `1` because the transmit code maintains the paired lists required by that mode.
 
 1. The Metamod map callback or game-frame check notices a new map.
 2. `change_map` stops the old worker and automatic baker, clears old map/transmit state, then asks the CS2 filesystem for mounted map-VPK candidates.
@@ -114,18 +118,19 @@ The finished immutable result contains its sequence, capture/completion times, r
 `hook_check_transmit` is deliberately conservative:
 
 1. Return without changes if CS2FOW is disabled, the map is not active, inputs are invalid, or the latest worker result is missing/stale.
-2. Lock `transmit_state_mutex_`. This protects lifecycle, pair-baseline, quarantined-group, natural-refresh, and debug state shared with game-frame capture and console commands. Ray traversal and file work never run under this lock.
-3. First scan the recipients for CS2 full updates. For those recipients, clear CS2FOW's waiting flags and stored hidden groups, but do not alter that full-update snapshot.
+2. Lock `transmit_state_mutex_`. This protects lifecycle, pair-baseline, quarantined-group, and debug state shared with game-frame capture and console commands. Ray traversal and file work never run under this lock.
+3. First scan the recipients for CS2 full updates. For those recipients, clear stored hidden groups, but do not alter that full-update snapshot.
 4. Re-read live recipient/target lifecycles and visual groups. Any mismatch with the copied worker player fails open.
 5. Skip self, teammates, invalid players, and full-update snapshots.
 6. Require a stable player pair, a warmup period, and evidence that a complete current visual group was previously sent on an older worker sequence before the pair is allowed to hide.
-7. When hidden, store the exact visual group, set “waiting for full update,” and clear only its bits in `info->m_pTransmitEntity`.
-8. If rays later say visible while waiting, keep withholding the current group until CS2 naturally schedules a full update. CS2FOW never asks CS2 for one.
-9. When a current group cannot be rebuilt, a still-valid quarantined old group may be withheld briefly. Invalid handles/indexes are skipped rather than guessed.
+7. When hidden, store the exact visual group. For each member whose primary bit is set, set the matching bit through the existing second `CCheckTransmitInfo` pointer, locally treated as `dont_transmit`, and only then clear the primary bit.
+8. If either paired-list pointer is unavailable, change neither list and fail open. If a primary bit is already clear, leave both bits alone.
+9. If rays later say visible, stop withholding the current group and let ordinary snapshots handle it; CS2FOW does not wait for or request a full update.
+10. When a current group cannot be rebuilt, a still-valid quarantined old group may be withheld briefly through the same paired operation. Invalid handles/indexes are skipped rather than guessed.
 
-No code reads, requires, or writes CS2's unverified auxiliary transmit lists. The primary list is the only list changed.
+Those are the only two lists CS2FOW changes. Full-update snapshots, `+16` out-of-PVS updates, and `+24` HLTV storage are untouched. Valve mode `0` uses its compatibility behavior; mode `1` consumes the explicit `dont_transmit` information maintained by the same code.
 
-When `cs2fow_debug` is off, clearing performs no bit pre-check, classname lookup, record search, or record update. When it is on, evidence is recorded only if the primary bit was set immediately before `Clear`. The 256-record fixed array deduplicates by entity handle, source pawn, and membership relationship; it aggregates recipients/reasons/counts without heap allocation in the hook.
+The primary `IsBitSet` check always runs because only set bits may enter the paired operation. When `cs2fow_debug` is off, clearing skips classname lookup, record search, and record update. When it is on, evidence is recorded only for a primary bit that CS2FOW actually clears. The 256-record fixed array deduplicates by entity handle, source pawn, and membership relationship; it aggregates recipients/reasons/counts without heap allocation in the hook.
 
 ## Thread and data ownership
 
@@ -133,7 +138,7 @@ When `cs2fow_debug` is off, clearing performs no bit pre-check, classname lookup
 | --- | --- | --- | --- |
 | Game thread | Yes | Map state, schema reads, copied player snapshots, visual-group lifecycle state | Uses `transmit_state_mutex_` when capture touches transmit lifecycle state. |
 | Visibility worker | No | One taken snapshot, ray caches, reveal holds, worker statistics, next result | `mutex_` protects pending work; `stats_mutex_` protects statistics; published result is shared immutably. |
-| CheckTransmit hook | Yes, only for validation/group resolution | Primary transmit bits and transmit lifecycle/quarantine/debug state | Holds `transmit_state_mutex_`; does no BVH traversal, file I/O, process work, or heap allocation. |
+| CheckTransmit hook | Yes, only for validation/group resolution | Paired primary/`dont_transmit` bits and transmit lifecycle/quarantine/debug state | Holds `transmit_state_mutex_`; does no BVH traversal, file I/O, process work, or heap allocation. |
 | Automatic-baker thread | No live engine objects | External process and one completion record | Receives copied paths/map-source metadata; its own mutex protects status/completion. |
 | Console commands | No direct player traversal | Read status or read/clear debug records | Debug commands use `transmit_state_mutex_`. |
 
@@ -143,11 +148,11 @@ The BVH8 data is loaded before the worker starts and remains unchanged until tha
 
 - Missing, invalid, changed, or stale information always fails open.
 - Full-update snapshots are never filtered.
-- Only the verified primary transmit list is changed.
+- Only set primary bits and their matching verified `dont_transmit` bits are changed; either missing pointer fails open.
 - The worker receives copied data and never dereferences engine objects.
 - CheckTransmit uses fixed-size visual groups, caches, and debug records; it performs no heap allocation.
 - Player/visual-group lifetime changes reset pair baselines and create a warmup instead of hiding immediately.
-- Enabling/disabling filtering resets lifecycle, pair, hidden-group, refresh-wait, and auxiliary-entity state but preserves collected debug evidence.
+- Enabling/disabling filtering resets lifecycle, pair, hidden-group, and auxiliary-entity state but preserves collected debug evidence.
 - A map change, level shutdown, or normal plugin-state reset also clears debug evidence.
 - Worker start resets pending/published work, cached blocking packets, reveal holds, and timing/pair statistics.
 - Automatic-baker stop cancels/joins its task before old map state is discarded.
@@ -160,7 +165,7 @@ The BVH8 data is loaded before the worker starts and remains unchanged until tha
 | Player/schema field capture | `src/plugin/game_state.cpp` | Live engine reads remain on the game thread and uncertainty fails open. |
 | Ray scheduling, caches, or reveal hold | `src/plugin/visibility_worker.cpp` | Worker input must stay pointer-free copied data. |
 | Which target entities form a visual group | `collect_player_visual_group` in `game_state.cpp` | Fixed capacity, full-group validation, handles, and lifecycle identity protect transmit safety. |
-| Withholding rules or evidence | `src/plugin/transmit.cpp` | Primary list only; no filtering on full updates; no allocation in the hook. |
+| Withholding rules or evidence | `src/plugin/transmit.cpp` | Set `dont_transmit` before clearing a set primary bit; no filtering on full updates; no allocation in the hook. |
 | VPK compatibility | `src/core/vpk.cpp` and `map_source.cpp` | Check every range/CRC and preserve direct-over-nested precedence. |
 | BVH traversal math | `src/core/bvh8.cpp` | Tests cover open/blocked rays and packet caching. |
 | BVH file layout | `src/core/bvh8_format.cpp` and `bvh8.h` | Validate before allocation and keep replacement atomic. |

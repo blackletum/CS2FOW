@@ -1,8 +1,8 @@
 #pragma once
 
-// Tiny verified CheckTransmit helpers: parse unsigned gamedata values and read
-// CS2's private full-update flag at the configured offset. They never discover,
-// expose, or mutate auxiliary transmit lists.
+// Tiny verified CheckTransmit helpers: parse unsigned gamedata values, read
+// CS2's private full-update flag, and pair primary-list removals with the
+// explicit don't-transmit list. They never discover private list addresses.
 
 #include <charconv>
 #include <cstdint>
@@ -50,6 +50,18 @@ inline bool read_checktransmit_full_update(const void *info, uint32_t offset)
 		std::memcpy(&value, static_cast<const char *>(info) + offset, sizeof(value));
 	}
 	return value;
+}
+
+template <typename mask_type>
+inline bool withhold_transmit_bit(mask_type *primary, mask_type *dont_transmit, int index)
+{
+	if (primary == nullptr || dont_transmit == nullptr || !primary->IsBitSet(index))
+	{
+		return false;
+	}
+	dont_transmit->Set(index);
+	primary->Clear(index);
+	return true;
 }
 
 } // namespace cs2fow
