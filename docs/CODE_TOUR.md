@@ -12,7 +12,7 @@ It explains the intent of the code. The engine and file-format details are still
 
 **Target:** another player whom the recipient might or might not be able to see.
 
-**Visual group:** every networked entity CS2FOW treats as the visible body of one target: pawn, weapons, wearables, carried-hostage prop, and accepted owner/effect-linked entities.
+**Visual group:** the explicitly known networked entities CS2FOW treats as the visible body of one target: pawn, carried weapons, wearables, and a currently carried hostage prop. Unknown gameplay entities are not inferred from generic links.
 
 **Bake:** the `.bvh8` file made from a map's static collision triangles. Baking moves expensive map preparation out of normal play.
 
@@ -32,7 +32,7 @@ It explains the intent of the code. The engine and file-format details are still
 
 **Full update:** a refresh chosen by CS2 that sends a recipient complete entity state. CS2FOW recognizes it but never requests it.
 
-**Quarantine:** a short record of a previously hidden visual group. It prevents old linked entities from escaping during an uncertain group change.
+**Quarantine:** a short record of a previously hidden visual group. It prevents known old group members from escaping during an uncertain group change.
 
 **Handle and edict:** a handle identifies one particular lifetime of an entity; an edict is its network-list index. Checking both lifetime and index helps avoid acting on a recycled entity.
 
@@ -131,7 +131,7 @@ The finished immutable result contains its sequence, capture/completion times, r
 
 Those are the only two lists CS2FOW changes. Full-update snapshots, `+16` out-of-PVS updates, and `+24` HLTV storage are untouched. Valve mode `0` uses its compatibility behavior; mode `1` consumes the explicit `dont_transmit` information maintained by the same code.
 
-The primary `IsBitSet` check always runs because only set bits may enter the paired operation. When `cs2fow_debug` is off, clearing skips classname lookup, record search, and record update. When it is on, evidence is recorded only for a primary bit that CS2FOW actually clears. The 256-record fixed array deduplicates by entity handle, source pawn, and membership relationship; it aggregates recipients/reasons/counts without heap allocation in the hook.
+The primary `IsBitSet` check always runs because only set bits may enter the paired operation. When `cs2fow_debug` is off, clearing skips classname lookup, record search, and record update. When it is on, evidence is recorded only for a primary bit that CS2FOW actually clears. The 256-record fixed array deduplicates by entity handle and source pawn; it aggregates recipients/reasons/counts without heap allocation in the hook.
 
 ## Thread and data ownership
 
@@ -153,7 +153,7 @@ The BVH8 data is loaded before the worker starts and remains unchanged until tha
 - The worker receives copied data and never dereferences engine objects.
 - CheckTransmit uses fixed-size visual groups, caches, and debug records; it performs no heap allocation.
 - Player/visual-group lifetime changes reset pair baselines and create a warmup instead of hiding immediately.
-- Enabling/disabling filtering resets lifecycle, pair, hidden-group, and auxiliary-entity state but preserves collected debug evidence.
+- Enabling/disabling filtering resets lifecycle, pair, and hidden-group state but preserves collected debug evidence.
 - A map change, level shutdown, or normal plugin-state reset also clears debug evidence.
 - Worker start resets pending/published work, cached blocking packets, reveal holds, and timing/pair statistics.
 - Automatic-baker stop cancels/joins its task and terminates its full baker/VRF process tree before old map state is discarded.

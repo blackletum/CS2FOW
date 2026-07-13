@@ -746,15 +746,10 @@ void test_checktransmit_private_offsets()
 
 void test_transmit_debug()
 {
-	assert(transmit_member_from_links(false, false) == transmit_member_kind::direct);
-	assert(transmit_member_from_links(true, false) == transmit_member_kind::owner_link);
-	assert(transmit_member_from_links(false, true) == transmit_member_kind::effect_link);
-	assert(transmit_member_from_links(true, true) == transmit_member_kind::owner_effect_link);
-
 	using clock = std::chrono::steady_clock;
 	const auto start = clock::time_point {} + std::chrono::seconds(10);
 	transmit_debug_log<2, 16> log;
-	transmit_debug_event first {10, 100, 1, 0, 0, 1, transmit_member_kind::direct, k_transmit_reason_current, start};
+	transmit_debug_event first {10, 100, 1, 1, k_transmit_reason_current, start};
 	test_transmit_mask primary {true};
 	test_transmit_mask dont_transmit;
 	const auto clear_and_record = [&](bool debug)
@@ -776,10 +771,16 @@ void test_transmit_debug()
 	assert(records[0].reasons == (k_transmit_reason_current | k_transmit_reason_quarantine));
 	assert(records[0].first_seen == start && records[0].last_seen == start + std::chrono::milliseconds(5));
 
-	transmit_debug_event second {20, 200, 2, 10, 0, 2, transmit_member_kind::owner_link, k_transmit_reason_current, start};
-	transmit_debug_event third {30, 300, 3, 0, 20, 3, transmit_member_kind::effect_link, k_transmit_reason_current, start};
+	transmit_debug_log<2, 16> distinct_sources;
+	distinct_sources.record({10, 100, 1, 1, k_transmit_reason_current, start}, "player");
+	distinct_sources.record({10, 100, 2, 1, k_transmit_reason_current, start}, "player");
+	assert(distinct_sources.records()[0].valid && distinct_sources.records()[1].valid);
+	assert(distinct_sources.records()[0].source != distinct_sources.records()[1].source);
+
+	transmit_debug_event second {20, 200, 2, 2, k_transmit_reason_current, start};
+	transmit_debug_event third {30, 300, 3, 3, k_transmit_reason_current, start};
 	log.record(second, "weapon");
-	log.record(third, "effect");
+	log.record(third, "wearable");
 	assert(records[0].handle == 300 && records[1].handle == 200);
 	log.clear();
 	assert(!records[0].valid && !records[1].valid);
@@ -789,12 +790,12 @@ void test_hidden_entity_group()
 {
 	using clock = std::chrono::steady_clock;
 	const auto start = clock::time_point {} + std::chrono::seconds(30);
-	hidden_entity_group<uint32_t, 5> source;
+	hidden_entity_group<uint32_t, 3> source;
 	std::array<uint32_t, 4> handles {10, 11, 12, 0};
 	source.source = 10;
-	std::copy(handles.begin(), handles.end(), source.handles.begin());
+	std::copy_n(handles.begin(), source.handles.size(), source.handles.begin());
 	source.count = 3;
-	hidden_entity_group<uint32_t, 5> group;
+	hidden_entity_group<uint32_t, 3> group;
 
 	hidden_group_store(group, source, start, std::chrono::milliseconds(3000));
 	assert(group.count == 3);
@@ -812,37 +813,15 @@ void test_hidden_entity_group()
 	assert(hidden_group_all_of(group, [&](uint32_t handle) { return marked[handle]; }));
 
 	hidden_group_clear(group);
-	group.handles[0] = 10;
-	group.handles[1] = 20;
-	group.count = 2;
-	const std::array<owner_effect_link<uint32_t>, 5> links {{
-		{30, 10, 0},
-		{31, 0, 20},
-		{32, 10, 20},
-		{32, 99, 98},
-		{20, 10, 0}
-	}};
-	assert(hidden_group_append_owner_effect_links(group, links.data(), links.size(), [](uint32_t child) { return child != 0; }));
-	assert(group.count == 5);
-	assert(hidden_group_contains(group, 30u, group.count));
-	assert(hidden_group_contains(group, 31u, group.count));
-	assert(hidden_group_contains(group, 32u, group.count));
-	assert(group.link_owners[2] == 10 && group.link_effects[2] == 0);
-	assert(group.link_owners[3] == 0 && group.link_effects[3] == 20);
-	assert(group.link_owners[4] == 10 && group.link_effects[4] == 20);
-	hidden_entity_group<uint32_t, 5> stored;
-	hidden_group_store(stored, group, start, std::chrono::milliseconds(3000));
-	assert(stored.link_owners == group.link_owners && stored.link_effects == group.link_effects);
-
-	const std::array<owner_effect_link<uint32_t>, 1> overflow {{{33, 10, 0}}};
-	assert(!hidden_group_append_owner_effect_links(group, overflow.data(), overflow.size(), [](uint32_t) { return true; }));
-
-	hidden_group_clear(group);
-	group.handles[0] = 10;
-	group.count = 1;
-	const std::array<owner_effect_link<uint32_t>, 1> unusable {{{30, 10, 0}}};
-	assert(hidden_group_append_owner_effect_links(group, unusable.data(), unusable.size(), [](uint32_t) { return false; }));
-	assert(group.count == 1);
+	assert(hidden_group_append_unique(group, 10u));
+	assert(hidden_group_append_unique(group, 10u));
+	assert(hidden_group_append_unique(group, 20u));
+	assert(hidden_group_append_unique(group, 30u));
+	assert(group.count == 3);
+	const std::array<uint32_t, 3> expected {10, 20, 30};
+	assert(group.handles == expected);
+	assert(hidden_group_append_unique(group, 30u));
+	assert(!hidden_group_append_unique(group, 40u));
 }
 
 double benchmark_worker_loop(const bvh8_data &data, const std::string &label)

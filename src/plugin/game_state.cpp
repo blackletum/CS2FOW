@@ -146,9 +146,6 @@ bool plugin::resolve_schema(std::string &error)
 	require(fields_.has_death_info, "CCSPlayerPawn", "m_bHasDeathInfo");
 	require(fields_.death_info_time, "CCSPlayerPawn", "m_flDeathInfoTime");
 	require(fields_.carried_hostage_prop, "CCSPlayer_HostageServices", "m_hCarriedHostageProp");
-	const bool owner_effect_schema_available =
-		optional(fields_.owner_entity, "CBaseEntity", "m_hOwnerEntity")
-		&& optional(fields_.effect_entity, "CBaseEntity", "m_hEffectEntity");
 	smoke_schema_available_ = optional(fields_.did_smoke_effect, "CSmokeGrenadeProjectile", "m_bDidSmokeEffect");
 	if (!error.empty())
 	{
@@ -156,7 +153,6 @@ bool plugin::resolve_schema(std::string &error)
 		return false;
 	}
 	weapon_item_schema_available_ = weapon_item_schema_available;
-	owner_effect_schema_available_ = owner_effect_schema_available;
 	return true;
 }
 
@@ -250,10 +246,9 @@ weapon_muzzle_class plugin::active_weapon_muzzle_class(CGameEntitySystem *system
 	return weapon_muzzle_class_from_item_definition(definition);
 }
 
-void plugin::refresh_entity_caches(CGameEntitySystem *system,
+void plugin::collect_smoke_entities(CGameEntitySystem *system,
 	std::array<CEntityInstance *, k_max_smoke_volumes> &smokes, size_t &smoke_count, bool &smoke_overflow)
 {
-	aux_visual_count_ = 0;
 	smoke_count = 0;
 	smoke_overflow = false;
 	if (system == nullptr)
@@ -283,25 +278,6 @@ void plugin::refresh_entity_caches(CGameEntitySystem *system,
 				smoke_overflow = true;
 			}
 		}
-		if (!owner_effect_schema_available_)
-		{
-			continue;
-		}
-		const CEntityHandle child = entity_handle(entity);
-		const CEntityHandle owner = field<CEntityHandle>(entity, fields_.owner_entity);
-		const CEntityHandle effect = field<CEntityHandle>(entity, fields_.effect_entity);
-		if (!child.IsValid() || (!owner.IsValid() && !effect.IsValid()))
-		{
-			continue;
-		}
-		if (aux_visual_count_ >= aux_visual_entities_.size())
-		{
-			continue;
-		}
-		aux_visual_entity &record = aux_visual_entities_[aux_visual_count_++];
-		record.child = child;
-		record.owner = owner;
-		record.effect = effect;
 	}
 }
 
@@ -370,12 +346,11 @@ bool plugin::collect_player_visual_group(CGameEntitySystem *system, CEntityInsta
 		{
 			return true;
 		}
-		if (!valid_networked_edict_index(resolve_entity_index(system, handle)) || group.count >= group.handles.size())
+		if (!valid_networked_edict_index(resolve_entity_index(system, handle)))
 		{
 			return false;
 		}
-		group.handles[group.count++] = handle;
-		return true;
+		return hidden_group_append_unique(group, handle);
 	};
 	const auto collect_vector = [&](void *base, uint32_t offset, int max_count)
 	{
@@ -411,14 +386,6 @@ bool plugin::collect_player_visual_group(CGameEntitySystem *system, CEntityInsta
 		hidden_group_clear(group);
 		return false;
 	}
-	if (!hidden_group_append_owner_effect_links(group, aux_visual_entities_.data(), aux_visual_count_, [&](CEntityHandle handle)
-	{
-		return valid_networked_edict_index(resolve_entity_index(system, handle));
-	}))
-	{
-		hidden_group_clear(group);
-		return false;
-	}
 	return group.count != 0;
 }
 
@@ -437,9 +404,7 @@ bool plugin::capture(visibility_snapshot &value, float game_time)
 	std::array<CEntityInstance *, k_max_smoke_volumes> smoke_entities {};
 	size_t smoke_count = 0;
 	bool smoke_overflow = false;
-	std::unique_lock<std::mutex> lock(transmit_state_mutex_);
-	refresh_entity_caches(system, smoke_entities, smoke_count, smoke_overflow);
-	lock.unlock();
+	collect_smoke_entities(system, smoke_entities, smoke_count, smoke_overflow);
 	value.filter_teammates = cs2fow_filter_teammates.Get();
 	value.smoke_enabled = cs2fow_smoke_occlusion.Get();
 	value.smoke_available = smoke_schema_available_ && smoke_gamedata_available_;
@@ -449,7 +414,7 @@ bool plugin::capture(visibility_snapshot &value, float game_time)
 		value.smoke_available = false;
 		value.smokes.reset();
 	}
-	lock.lock();
+	std::unique_lock<std::mutex> lock(transmit_state_mutex_);
 	for (uint32_t slot = 0; slot < k_max_players; ++slot)
 	{
 		live_player live;
