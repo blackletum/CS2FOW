@@ -13,21 +13,6 @@
 namespace cs2fow
 {
 
-enum class transmit_member_kind : uint8_t
-{
-	direct,
-	owner_link,
-	effect_link,
-	owner_effect_link
-};
-
-inline transmit_member_kind transmit_member_from_links(bool owner, bool effect)
-{
-	if (owner && effect) return transmit_member_kind::owner_effect_link;
-	if (owner) return transmit_member_kind::owner_link;
-	return effect ? transmit_member_kind::effect_link : transmit_member_kind::direct;
-}
-
 inline constexpr uint8_t k_transmit_reason_current = 1u << 0u;
 inline constexpr uint8_t k_transmit_reason_quarantine = 1u << 1u;
 
@@ -36,10 +21,7 @@ struct transmit_debug_event
 	int edict {-1};
 	uint32_t handle {};
 	uint32_t source {};
-	uint32_t owner {};
-	uint32_t effect {};
 	int recipient_slot {-1};
-	transmit_member_kind member {transmit_member_kind::direct};
 	uint8_t reason {};
 	std::chrono::steady_clock::time_point when;
 };
@@ -50,9 +32,6 @@ struct transmit_debug_record
 	int edict {-1};
 	uint32_t handle {};
 	uint32_t source {};
-	uint32_t owner {};
-	uint32_t effect {};
-	transmit_member_kind member {transmit_member_kind::direct};
 	uint8_t reasons {};
 	uint64_t recipients {};
 	uint64_t clears {};
@@ -84,9 +63,6 @@ public:
 		record.edict = event.edict;
 		record.handle = event.handle;
 		record.source = event.source;
-		record.owner = event.owner;
-		record.effect = event.effect;
-		record.member = event.member;
 		record.first_seen = event.when;
 		std::snprintf(record.name.data(), record.name.size(), "%s", name == nullptr ? "<unknown>" : name);
 		update(record, event);
@@ -106,8 +82,7 @@ public:
 private:
 	static bool same_key(const record_type &record, const transmit_debug_event &event)
 	{
-		return record.handle == event.handle && record.source == event.source && record.owner == event.owner
-			&& record.effect == event.effect && record.member == event.member;
+		return record.handle == event.handle && record.source == event.source;
 	}
 
 	static void update(record_type &record, const transmit_debug_event &event)

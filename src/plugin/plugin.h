@@ -34,11 +34,10 @@ namespace cs2fow
 
 inline constexpr uint32_t k_max_weapons = 64;
 inline constexpr uint32_t k_max_wearables = 32;
-inline constexpr uint32_t k_max_aux_visual_group_entities = 32;
 inline constexpr uint32_t k_max_recent_hide_records = 256;
 inline constexpr uint32_t k_entity_scan_hard_limit = MAX_TOTAL_ENTITIES;
 inline constexpr uint32_t k_max_entity_name = 64;
-inline constexpr uint32_t k_max_hidden_player_entities = 1 + 2 + k_max_weapons + k_max_wearables + 1 + k_max_aux_visual_group_entities;
+inline constexpr uint32_t k_max_hidden_player_entities = 1 + 2 + k_max_weapons + k_max_wearables + 1;
 inline constexpr uint32_t k_max_gamedata_offset = 4096;
 inline constexpr uint32_t k_max_module_rva = 512u * 1024u * 1024u;
 inline constexpr uint8_t k_life_alive = 0;
@@ -88,8 +87,6 @@ struct schema_offsets
 	uint32_t has_death_info {};
 	uint32_t death_info_time {};
 	uint32_t carried_hostage_prop {};
-	uint32_t owner_entity {};
-	uint32_t effect_entity {};
 	uint32_t did_smoke_effect {};
 };
 
@@ -125,8 +122,6 @@ enum class hide_reason : uint8_t
 	current,
 	quarantine
 };
-
-using aux_visual_entity = owner_effect_link<CEntityHandle>;
 
 struct runtime_timing_stats
 {
@@ -209,7 +204,7 @@ private:
 	CEntityInstance *pawn(CEntityInstance *controller) const;
 	lifecycle_key player_lifecycle(uint32_t slot, CGameEntitySystem *system, live_player *live) const;
 	weapon_muzzle_class active_weapon_muzzle_class(CGameEntitySystem *system, CEntityInstance *pawn) const;
-	void refresh_entity_caches(CGameEntitySystem *system,
+	void collect_smoke_entities(CGameEntitySystem *system,
 		std::array<CEntityInstance *, k_max_smoke_volumes> &smokes, size_t &smoke_count, bool &smoke_overflow);
 	bool collect_player_visual_group(CGameEntitySystem *system, CEntityInstance *pawn, visual_entity_group &group) const;
 	bool group_fully_marked(CGameEntitySystem *system, CBitVec<MAX_EDICTS> *bits, const visual_entity_group &group) const;
@@ -248,13 +243,10 @@ private:
 	visibility_worker worker_;
 	automatic_baker automatic_baker_;
 	bool weapon_item_schema_available_ {};
-	bool owner_effect_schema_available_ {};
 	bool smoke_schema_available_ {};
 	bool smoke_gamedata_available_ {};
 	bool he_event_available_ {};
 	he_clearance_history he_clearance_history_;
-	std::array<aux_visual_entity, MAX_EDICTS> aux_visual_entities_;
-	size_t aux_visual_count_ {};
 	recent_hide_log recent_hides_;
 	std::array<lifecycle_guard, k_max_players> lifecycle_;
 	std::array<std::array<pair_guard, k_max_players>, k_max_players> pair_guards_;

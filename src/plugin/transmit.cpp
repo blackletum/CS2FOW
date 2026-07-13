@@ -30,17 +30,6 @@ uint8_t hide_reason_mask(hide_reason reason)
 	return reason == hide_reason::quarantine ? k_transmit_reason_quarantine : k_transmit_reason_current;
 }
 
-const char *transmit_member_name(transmit_member_kind member)
-{
-	switch (member)
-	{
-		case transmit_member_kind::owner_link: return "owner_link";
-		case transmit_member_kind::effect_link: return "effect_link";
-		case transmit_member_kind::owner_effect_link: return "owner+effect";
-		default: return "direct";
-	}
-}
-
 const char *transmit_reason_name(uint8_t reasons)
 {
 	if (reasons == (k_transmit_reason_current | k_transmit_reason_quarantine)) return "current+quarantine";
@@ -89,21 +78,13 @@ void plugin::record_hidden_entity(CGameEntitySystem *system, size_t member_index
 	const visual_entity_group &group, int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now)
 {
 	const CEntityHandle handle = group.handles[member_index];
-	const CEntityHandle owner = group.link_owners[member_index];
-	const CEntityHandle effect = group.link_effects[member_index];
-	const bool owner_link = owner.IsValid();
-	const bool effect_link = effect.IsValid();
-	const transmit_member_kind member = transmit_member_from_links(owner_link, effect_link);
 	char name[k_max_entity_name] {};
 	copy_entity_name(system == nullptr ? nullptr : system->GetEntityInstance(handle), name);
 	recent_hides_.record({
 		edict,
 		static_cast<uint32_t>(handle.ToInt()),
 		static_cast<uint32_t>(group.source.ToInt()),
-		owner_link ? static_cast<uint32_t>(owner.ToInt()) : 0u,
-		effect_link ? static_cast<uint32_t>(effect.ToInt()) : 0u,
 		recipient_slot,
-		member,
 		hide_reason_mask(reason),
 		now
 	}, name);
@@ -153,7 +134,6 @@ void plugin::reset_transmit_state(bool clear_debug_records)
 			hidden_group_clear(group);
 		}
 	}
-	aux_visual_count_ = 0;
 	he_clearance_history_.clear();
 	capture_timing_ = {};
 	transmit_timing_ = {};
@@ -342,8 +322,8 @@ void plugin::print_entities(int edict)
 		format_recipients(record.recipients, recipients);
 		const double first_age_ms = std::chrono::duration<double, std::milli>(now - record.first_seen).count();
 		const double last_age_ms = std::chrono::duration<double, std::milli>(now - record.last_seen).count();
-		META_CONPRINTF("[CS2FOW] entity %d class=%s member=%s handle=0x%x source=0x%x owner=0x%x effect=0x%x recipients=%s reasons=%s clears=%llu first_age=%.0fms last_age=%.0fms\n",
-			record.edict, record.name.data(), transmit_member_name(record.member), record.handle, record.source, record.owner, record.effect,
+		META_CONPRINTF("[CS2FOW] entity %d class=%s handle=0x%x source=0x%x recipients=%s reasons=%s clears=%llu first_age=%.0fms last_age=%.0fms\n",
+			record.edict, record.name.data(), record.handle, record.source,
 			recipients, transmit_reason_name(record.reasons), static_cast<unsigned long long>(record.clears), first_age_ms, last_age_ms);
 	}
 	if (count == 0)

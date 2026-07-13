@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1-preview
+
+- Stopped generic owner/effect links from pulling independent gameplay entities into a hidden player's visual group.
+- Kept planted C4, dropped objectives, grenade projectiles, infernos, sounds, and unknown entities independent so player culling cannot hide core gameplay state.
+- Kept explicit player visuals together: pawn, known carried weapons (including carried C4), wearables, and a currently carried hostage prop.
+- Simplified `cs2fow_entity` evidence to direct visual-group membership.
+
 ## 0.2.0-preview
 
 - Added default-on smoke occlusion from CS2's live voxel grid, with copied worker data and smoke-only fail-open behavior.

@@ -37,7 +37,7 @@ A cheat cannot recover an exact live enemy position that the server never sent. 
 
 ### What exactly gets hidden?
 
-For a living enemy, CS2FOW treats the pawn, current weapons, wearables, carried hostage prop, and directly linked owner/effect entities as one visual group.
+For a living enemy, CS2FOW treats only the pawn, known carried weapons, wearables, and a currently carried hostage prop as one visual group. Unknown and independent gameplay entities stay visible.
 
 Self, dead players, spectators, and HLTV remain unfiltered. Teammates remain unfiltered by default; an optional setting applies the same visibility gate to living teammates.
 
@@ -78,7 +78,7 @@ If CS2FOW is missing information or is not sure that filtering is safe, it sends
 ## Quickstart
 
 1. Install [Metamod:Source](https://www.sourcemm.net/) on the CS2 server.
-2. Download the Windows or Linux `0.2.0-preview` core ZIP from the [CS2FOW releases page](https://github.com/karola3vax/CS2FOW/releases).
+2. Download the Windows or Linux `0.2.1-preview` core ZIP from the [CS2FOW releases page](https://github.com/karola3vax/CS2FOW/releases).
 3. Extract the ZIP into the server's `game/csgo` folder. Keep the folders inside the ZIP unchanged.
 4. Start the server and load a map.
 5. Run `cs2fow_status` in the server console.
@@ -93,7 +93,7 @@ The plugin also verifies that its private gamedata matches the loaded CS2 server
 
 CS2FOW runs only on the server. Players install nothing.
 
-When a living enemy is fully behind solid map geometry, CS2FOW may withhold that enemy's current visual group from one recipient's normal snapshot. The visual group includes the pawn, weapons, wearables, a carried hostage prop, and directly linked owner/effect entities found by the plugin. For each entity CS2FOW actually hides, it marks the matching `dont_transmit` bit before removing the primary send bit. If either list is unavailable, it leaves the entity visible. The enemy still exists on the server, so movement, hit registration, damage, wall penetration, and game rules continue normally.
+When a living enemy is fully behind solid map geometry, CS2FOW may withhold that enemy's current visual group from one recipient's normal snapshot. The visual group includes only the pawn, known carried weapons, wearables, and a currently carried hostage prop. Planted C4, dropped objectives, grenade projectiles, infernos, sounds, and unknown entities remain independent and are never hidden merely because they refer to that player. For each entity CS2FOW actually hides, it marks the matching `dont_transmit` bit before removing the primary send bit. If either list is unavailable, it leaves the entity visible. The enemy still exists on the server, so movement, hit registration, damage, wall penetration, and game rules continue normally.
 
 This removes the main live position data used by wallhacks. It does not make every form of cheating impossible: sound, teammate information, last-known positions, and other game clues still exist.
 
@@ -177,7 +177,7 @@ cs2fow_entity <edict>         show records for one entity index
 cs2fow_entity clear           clear the evidence buffer
 ```
 
-Records show the classname, relationship to the pawn (`direct`, `owner_link`, `effect_link`, or `owner+effect`), handles, recipients, reasons, count, and age. Turning debugging off stops new records but keeps existing ones until a map/plugin reset or `clear`.
+Records show the classname, entity and source-pawn handles, recipients, reasons, count, and age. Turning debugging off stops new records but keeps existing ones until a map/plugin reset or `clear`.
 
 ## Fail-open behavior and known limits
 
