@@ -25,8 +25,8 @@ Every map gets a lightweight 3D copy of its solid walls. CS2FOW uses that copy t
 <table>
 <tr>
 <td width="50%" align="center">
-<img src="docs/cache.gif" width="100%" alt="CS2FOW operating on Cache"><br>
-<strong>Cache</strong>
+<img src="docs/cache.gif" width="100%" alt="CS2FOW operating around the Cache A site"><br>
+<strong>Cache &mdash; A site</strong>
 </td>
 <td width="50%" align="center">
 <img src="docs/dust2b.gif" width="100%" alt="CS2FOW operating around the Dust II B site"><br>
@@ -34,9 +34,13 @@ Every map gets a lightweight 3D copy of its solid walls. CS2FOW uses that copy t
 </td>
 </tr>
 <tr>
-<td colspan="2" align="center">
-<img src="docs/dust2long.gif" width="72%" alt="CS2FOW operating across Dust II long sightlines"><br>
+<td width="50%" align="center">
+<img src="docs/dust2long.gif" width="100%" alt="CS2FOW operating across Dust II long sightlines"><br>
 <strong>Dust II — Long</strong>
+</td>
+<td width="50%" align="center">
+<img src="docs/mirageaside.gif" width="100%" alt="CS2FOW operating around the Mirage A site"><br>
+<strong>Mirage &mdash; A site</strong>
 </td>
 </tr>
 </table>
