@@ -1,6 +1,6 @@
 {
   "version": "0.2.0-preview",
-  "source_commit": "b99069c50ed0de74a3d743adf9dd10715fad5188",
+  "source_commit": "b827b113b31fd1b69172465224ad6e0a8d12d7ca",
   "cs2_app_id": 730,
   "cs2_build_id": "24134959",
   "cs2_last_updated_unix": 1783647274,
@@ -32,8 +32,8 @@
     "de_vertigo"
   ],
   "artifacts": {
-    "cs2fow-0.2.0-preview-windows-x86_64.zip": "4e96bd5726f1ddd7f18f4d044d916cc3005484221f96a4fbeee878a92e507bd6",
-    "cs2fow-0.2.0-preview-linux-x86_64.zip": "27f6fb95e18ed06120ead4cf998fc3fd09c12e8885dc370c733dec92ebdc876d",
-    "cs2fow-0.2.0-preview-official-maps.zip": "14df09ee5ea3e3c441bf8f3b42fb0b54b9e273c9078591c2a0e5812385cf2cb2"
+    "cs2fow-0.2.0-preview-windows-x86_64.zip": "e7cca04e1d73c86fe927b330e52e3c98e608c302f39ec81c9531eab3db3fe4e0",
+    "cs2fow-0.2.0-preview-linux-x86_64.zip": "891eef9bf395507fada3b13e37ae4ffff7c7c81557c39e9e93424b205b435137",
+    "cs2fow-0.2.0-preview-official-maps.zip": "999ce0322558cb51e7f615d7a57e915089141f4f4b779e15b98a7d64232b3125"
   }
 }
