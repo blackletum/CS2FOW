@@ -175,7 +175,7 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 			hidden_group_clear(group);
 		}
 	}
-	if (!result || !visibility_snapshot_fresh(result->captured, now, 0.0f))
+	if (!result || !visibility_snapshot_fresh(result->captured, now))
 	{
 		record_timing();
 		return;
@@ -228,7 +228,7 @@ void plugin::hook_check_transmit(CCheckTransmitInfo **infos, int count, CBitVec<
 		std::memcpy(&slot, reinterpret_cast<const char *>(info) + recipient_slot_offset_, sizeof(slot));
 		if (slot < 0 || slot >= static_cast<int>(k_max_players) || read_checktransmit_full_update(info, transmit_offsets_.full_update_offset)
 			|| !result->players[slot].valid
-			|| !visibility_snapshot_fresh(result->captured, now, result->recipient_lookahead_seconds[slot]))
+			|| !visibility_snapshot_fresh(result->captured, now))
 		{
 			continue;
 		}

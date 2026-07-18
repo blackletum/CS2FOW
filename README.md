@@ -112,7 +112,7 @@ Doors, breakable objects, and moving props do not block CS2FOW yet. The baked ma
 <details>
 <summary><strong>How does it avoid enemies appearing too late around corners?</strong></summary>
 
-CS2FOW checks several body points, the corners of the player's box, and the muzzle of their held weapon. Above 75 units per second, it gradually starts looking ahead; at 100, prediction is fully active. It uses movement and the viewing player's ping to peek a little around the next corner before the client gets there. Wider shoulder checks at higher ping reduce late pop-in, and a short visibility hold stops one-tick flicker.
+CS2FOW checks several body points, the corners of the player's box, and the muzzle of their held weapon. It also places viewing points at your eye, shoulders, above your eye, and feet. When you hold W or S, or move diagonally, one extra point follows that direction. The shoulder and movement points reach farther at higher ping, stop at baked walls, and a short visibility hold prevents one-tick flicker.
 
 As soon as the background worker finds a clear view again, CS2FOW lets the player's next normal update through.
 
@@ -189,8 +189,8 @@ Live smoke can block those imaginary sight lines too. By default, an HE opens a 
 
 1. **Load the map:** CS2FOW finds the mounted VPK and the physics data inside it.
 2. **Bake the walls:** the baker turns thousands of collision triangles into a compact, quick-to-search map called a BVH8.
-3. **Take a picture:** on the game thread, CS2FOW safely copies each player's position, size, movement, view direction, ping, and held weapon. This recent picture is the snapshot.
-4. **Draw sight lines:** a background worker tests eight viewing points against the player's current and predicted body, box corners, and weapon muzzle.
+3. **Take a picture:** on the game thread, CS2FOW safely copies each player's position, size, movement buttons, view direction, ping, and held weapon. This recent picture is the snapshot.
+4. **Draw sight lines:** a background worker tests up to six viewing points against the player's current body, box corners, and weapon muzzle.
 5. **Choose visible or hidden:** if even one line gets past both the baked walls and live smoke, the player stays visible.
 6. **Control the outgoing update:** `CheckTransmit`, the server's outgoing entity list, first marks the verified `dont_transmit` bit and then removes the matching primary send bit for each hidden visual entity.
 
@@ -239,17 +239,13 @@ The debug buffer records only primary bits CS2FOW truly removed. Turning debug o
 | `cs2fow_he_clear_seconds` | `2.5` | Set how long an HE-opened viewing channel lasts. Use `0` to turn HE clearing off. |
 | `cs2fow_filter_teammates` | `0` | Give living teammates the same visibility checks as enemies. FFA mode is detected automatically. |
 | `cs2fow_update_interval_ms` | `1` | Wait at least this many milliseconds before sending another picture of the players to the worker. |
-| `cs2fow_base_lookahead_ms` | `75` | Start movement prediction this many milliseconds ahead before ping is added. |
-| `cs2fow_rtt_lookahead_scale` | `1.5` | Multiply the viewing player's round-trip ping by this amount when looking ahead. |
-| `cs2fow_max_lookahead_ms` | `375` | Never look farther ahead than this many milliseconds. Use `0` to turn movement prediction off. |
-| `cs2fow_max_prediction_units` | `96` | Never move either player's predicted position farther than this. Use `0` to turn movement prediction off. |
-| `cs2fow_shoulder_base_units` | `16` | Start the left and right viewing points this far from the player's eye. |
-| `cs2fow_shoulder_rtt_scale` | `0.48` | Add this many shoulder units for each millisecond of the viewing player's round-trip ping. |
-| `cs2fow_max_shoulder_units` | `96` | Never push the left and right viewing points farther out than this. |
+| `cs2fow_shoulder_base_units` | `16` | Start the left/right shoulder and movement-intention points this far from the player's eye. |
+| `cs2fow_shoulder_rtt_scale` | `0.48` | Add this many units to those points for each millisecond of the viewing player's round-trip ping. |
+| `cs2fow_max_shoulder_units` | `96` | Never push those ping-scaled viewing points farther out than this. |
 | `cs2fow_visibility_hold_ms` | `16` | Once a player becomes visible, keep them visible for at least this long to prevent flicker. |
 | `cs2fow_debug` | `0` | Save evidence about entity bits CS2FOW actually removed. It does not spam the console. |
 
-If you are keeping an older custom config, give it a quick update. Add `sv_enable_donttransmit 0` and both HE-clearance settings. Replace the old `50`/`150` lookahead defaults, add the RTT, prediction-distance, and shoulder settings, replace `cs2fow_min_lookahead_ms` with `cs2fow_base_lookahead_ms`, and remove `cs2fow_peek_margin_units`.
+If you are keeping an older custom config, give it a quick update. Add `sv_enable_donttransmit 0`, both HE-clearance settings, and the three shoulder settings above. Remove the old lookahead, prediction-distance, and peek-margin settings; CS2FOW now uses the player's current movement buttons instead.
 
 Automatic baking needs permission to write into `addons/cs2fow/data/maps`. On Linux, the packaged baker and VRF program also need to stay executable.
 
@@ -258,8 +254,9 @@ Automatic baking needs permission to write into `addons/cs2fow/data/maps`. On Li
 ## Honest limits
 
 - Baked walls and live smoke can block sight. Doors, breakable objects, moving props, particles, projectiles, and other moving things cannot.
-- Prediction is tuned for normal competitive and casual movement. Surf, KZ, and unusually fast boosts may still make a player appear late.
-- More ping compensation reduces corner pop-in by showing players farther around corners, even while the viewing player stands still. Smoother peeks cost a little more information.
+- CS2FOW uses current W/A/S/D intent rather than guessing future player positions. A fast target peeking a stationary player may still appear late.
+- More ping compensation reduces corner pop-in by moving shoulder and movement-intention checks farther around corners. Smoother peeks cost a little more information.
+- The feet point can see through low gaps that the player's eyes cannot. It is intentionally included to reduce late reveals around low geometry.
 - Sounds, bomb information, teammate information, last-known positions, and other clues that are not part of the player entity remain available.
 - If CS2FOW does not recognize the CS2 server file, it disables itself instead of guessing private memory locations.
 - Full-update snapshots are hands-off. `CheckTransmit` also leaves both send lists alone if either required pointer is missing.

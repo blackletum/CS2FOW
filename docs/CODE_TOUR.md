@@ -52,7 +52,7 @@ It explains the intent of the code. The engine and file-format details are still
 | `src/core/bvh8.cpp` | Traverse an in-memory BVH8 and answer whether a line segment hits a triangle. |
 | `src/core/bvh8_format.cpp` | Validate, read, verify, and safely replace BVH8 version 3 files. |
 | `src/core/builder.*` | Turn accepted triangles into BVH8 nodes and triangle packets. |
-| `src/core/visibility_sampling.*` | Build recipient/target points, movement prediction, held-weapon muzzle lengths, and lookahead. |
+| `src/core/visibility_sampling.*` | Build recipient/target points, ping-scaled input intent, and held-weapon muzzle lengths. |
 | `src/core/vpk.*` | Parse VPK versions 1/2, list entries, extract them, and verify their CRCs. |
 | `src/core/map_source.*` | Find direct or nested map physics sources and validate safe map subpaths. |
 | `src/core/lifecycle_guard.h` | Fixed-size rules for player lifetimes, pair warmup, visual-group identity, and quarantine. |
@@ -96,7 +96,7 @@ The game thread runs `hook_game_frame`. At most once per configured interval (de
 
 1. reads controllers and pawns through resolved schema fields;
 2. rejects HLTV, invalid controller/pawn links, spawning/dead players, non-T/CT teams, invalid bounds, and uncertain lifecycles;
-3. copies origin, velocity, eye position/yaw, bounds, round-trip latency, team, pawn index, and held-weapon muzzle class;
+3. copies origin, current movement buttons, eye position/yaw, bounds, round-trip latency, team, pawn index, and held-weapon muzzle class;
 4. builds/checks visual groups for lifecycle identity, but never gives live engine pointers to the worker; and
 5. submits a plain copied `visibility_snapshot` with a rising sequence number.
 
@@ -104,15 +104,15 @@ The game thread runs `hook_game_frame`. At most once per configured interval (de
 
 For each eligible living pair the worker:
 
-- makes eight recipient origins: current/predicted eye, RTT-scaled left/right shoulders, predicted shoulders, and current/predicted upward points;
+- makes five fixed recipient origins: eye, RTT-scaled left/right shoulders, eye plus 16 units, and feet;
+- adds one wall-clipped, RTT-scaled W/S or diagonal intention origin; pure A/D already uses the matching shoulder point;
 - makes target samples from padded AABB corners, fifteen tuned body points, and a held-weapon muzzle point;
-- clips movement at baked walls and adds separate current/future boxes, body points, and muzzle points when useful movement remains;
-- casts at most `8 x 48 = 384` rays, testing baked walls first and then copied live smoke, and stopping at the first open ray;
+- casts at most `6 x 24 = 144` rays, testing baked walls first and then copied live smoke, and stopping at the first open ray;
 - lets an HE clear only smoke that already existed when the detonation was recorded on the same game clock;
 - first tries the triangle packet that blocked the same pair's earlier ray, then traverses the BVH8 if needed; and
 - holds a newly open pair visible for `cs2fow_visibility_hold_ms`.
 
-The finished immutable result contains its sequence, capture/completion times, recipient lookahead, copied player identity, visibility matrix, timing, and pair counts. Publishing swaps a shared result; it never exposes a half-written matrix.
+The finished immutable result contains its sequence, capture/completion times, copied player identity, visibility matrix, timing, and pair counts. Publishing swaps a shared result; it never exposes a half-written matrix.
 
 ## CheckTransmit flow
 
@@ -162,7 +162,7 @@ The BVH8 data is loaded before the worker starts and remains unchanged until tha
 
 | Change | Start here | Keep in mind |
 | --- | --- | --- |
-| Body, AABB, lookahead, or muzzle sampling | `src/core/visibility_sampling.cpp` | Keep `tools/visibility_point_editor/default_sas_visibility_points.json` and its check in sync for body points. |
+| Body, AABB, input-origin, or muzzle sampling | `src/core/visibility_sampling.cpp` | Keep `tools/visibility_point_editor/default_sas_visibility_points.json` and its check in sync for body points. |
 | Player/schema field capture | `src/plugin/game_state.cpp` | Live engine reads remain on the game thread and uncertainty fails open. |
 | Ray scheduling, caches, or reveal hold | `src/plugin/visibility_worker.cpp` | Worker input must stay pointer-free copied data. |
 | Which target entities form a visual group | `collect_player_visual_group` in `game_state.cpp` | Fixed capacity, full-group validation, handles, and lifecycle identity protect transmit safety. |

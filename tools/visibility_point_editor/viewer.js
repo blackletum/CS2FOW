@@ -178,7 +178,8 @@ function stationary_viewer_origins()
 	const left = {x: eye.x, y: -k_shoulder_offset, z: eye.z};
 	const right = {x: eye.x, y: k_shoulder_offset, z: eye.z};
 	const up = {x: eye.x, y: eye.y, z: eye.z + k_vertical_origin_offset};
-	return [eye, eye, left, right, left, right, up, up];
+	const feet = {x: eye.x, y: eye.y, z: 0};
+	return [eye, left, right, up, feet];
 }
 
 function draw_runtime_rays()
@@ -882,9 +883,9 @@ function run_self_checks()
 	expect(generated_aabb_points().length === 8, "AABB fallback count");
 	expect(generated_aabb_points()[0].x === -20 && generated_aabb_points()[7].z === 76, "runtime AABB padding");
 	const viewer_origins = stationary_viewer_origins();
-	expect(viewer_origins.length === 8 && viewer_origins[0].x === 256, "fixed viewer origins");
-	expect(new Set(viewer_origins.map((point) => `${point.x},${point.y},${point.z}`)).size === 4, "stationary origin overlap");
-	expect(viewer_origins.length * (default_points.length + generated_aabb_points().length) === 184, "stationary ray count");
+	expect(viewer_origins.length === 5 && viewer_origins[0].x === 256, "fixed viewer origins");
+	expect(new Set(viewer_origins.map((point) => `${point.x},${point.y},${point.z}`)).size === 5, "stationary origins are unique");
+	expect(viewer_origins.length * (default_points.length + generated_aabb_points().length) === 115, "stationary ray count");
 	const roundtrip = JSON.parse(export_json());
 	const imported = validated_points(roundtrip, "self-check round trip");
 	expect(roundtrip.points.length === points.length, "JSON round trip count");

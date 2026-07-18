@@ -77,7 +77,8 @@ worker_stats visibility_worker::stats() const
 
 visibility_player visibility_worker::sample_player(const player_state &player)
 {
-	return {player.eye, player.origin, player.velocity, player.mins, player.maxs, player.eye_yaw_degrees, player.rtt_seconds, player.muzzle_class};
+	return {player.eye, player.origin, player.mins, player.maxs, player.eye_yaw_degrees, player.rtt_seconds,
+		player.movement_buttons, player.muzzle_class};
 }
 
 void visibility_worker::run()
@@ -112,16 +113,12 @@ void visibility_worker::run()
 		std::copy(std::begin(current.players), std::end(current.players), std::begin(result->players));
 		const float smoke_age_advance = std::max(0.0f,
 			std::chrono::duration<float>(started - current.captured).count());
-		std::array<float, k_max_players> recipient_lookahead {};
-		std::array<std::array<vec3, k_visibility_origin_count>, k_max_players> recipient_origins {};
+		std::array<visibility_origin_points, k_max_players> recipient_origins {};
 		for (uint32_t recipient = 0; recipient < k_max_players; ++recipient)
 		{
 			if (current.players[recipient].valid)
 			{
-				recipient_lookahead[recipient] = visibility_effective_lookahead_seconds(current.players[recipient].rtt_seconds, tuning);
-				result->recipient_lookahead_seconds[recipient] = recipient_lookahead[recipient];
-				recipient_origins[recipient] = visibility_origins(*data_, sample_player(current.players[recipient]),
-					recipient_lookahead[recipient], tuning);
+				recipient_origins[recipient] = visibility_origins(*data_, sample_player(current.players[recipient]), tuning);
 			}
 		}
 		for (uint32_t recipient = 0; recipient < k_max_players; ++recipient)
@@ -138,10 +135,11 @@ void visibility_worker::run()
 				++result->evaluated_pairs;
 				bool blocked = true;
 				const auto &ray_origins = recipient_origins[recipient];
-				const auto ray_targets = visibility_targets(*data_, sample_player(to), recipient_lookahead[recipient], tuning.max_prediction_units);
+				const auto ray_targets = visibility_targets(sample_player(to));
 				uint32_t ray = 0;
-				for (const vec3 &origin : ray_origins)
+				for (uint32_t origin_index = 0; origin_index < ray_origins.count; ++origin_index)
 				{
+					const vec3 &origin = ray_origins.points[origin_index];
 					for (uint32_t point_index = 0; point_index < ray_targets.count; ++point_index)
 					{
 						const ray_hit hit = segment_blocked(*data_, origin, ray_targets.points[point_index], cached_packets_[recipient][target][ray]);

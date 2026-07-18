@@ -24,6 +24,7 @@
 #include <memory>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace
@@ -101,7 +102,6 @@ void test_visibility_pair_eligibility()
 	player_state numbers = t;
 	numbers.eye = {};
 	numbers.origin = {};
-	numbers.velocity = {};
 	numbers.mins = {-16, -16, 0};
 	numbers.maxs = {16, 16, 72};
 	assert(valid_player_numbers(numbers));
@@ -110,9 +110,9 @@ void test_visibility_pair_eligibility()
 	numbers.eye.x = nan;
 	assert(!valid_player_numbers(numbers));
 	numbers.eye.x = 0;
-	numbers.velocity.y = infinity;
+	numbers.mins.y = infinity;
 	assert(!valid_player_numbers(numbers));
-	numbers.velocity.y = 0;
+	numbers.mins.y = -16;
 	numbers.rtt_seconds = nan;
 	assert(!valid_player_numbers(numbers));
 	numbers.rtt_seconds = 0;
@@ -246,22 +246,13 @@ void test_smoke_occlusion()
 void test_visibility_sampling()
 {
 	const bvh8_data open = test_world({{{10000, 10000, 10000}, {10001, 10000, 10000}, {10000, 10001, 10000}}});
-	const visibility_tuning tuning {75, 1.5f, 375, 96.0f, 16.0f, 0.48f, 96.0f};
+	const visibility_tuning tuning {16.0f, 0.48f, 96.0f};
 	visibility_player player {};
-	player.eye = {0, 0, 0};
+	player.eye = {0, 0, 64};
 	player.origin = {0, 0, 0};
 	player.mins = {-16, -16, 0};
 	player.maxs = {16, 16, 72};
 
-	assert(std::fabs(visibility_effective_lookahead_seconds(-1.0f, tuning) - 0.075f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.0f, tuning) - 0.075f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.05f, tuning) - 0.15f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.1f, tuning) - 0.225f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.15f, tuning) - 0.3f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.2f, tuning) - 0.375f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.5f, tuning) - 0.375f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.1f, {75, 0.0f, 375, 96.0f, 16.0f, 0.48f, 96.0f}) - 0.075f) < 0.001f);
-	assert(std::fabs(visibility_effective_lookahead_seconds(0.0f, {200, 1.5f, 100, 96.0f, 16.0f, 0.48f, 96.0f}) - 0.1f) < 0.001f);
 	assert(std::fabs(visibility_shoulder_offset_units(-1.0f, tuning) - 16.0f) < 0.01f);
 	assert(std::fabs(visibility_shoulder_offset_units(0.0f, tuning) - 16.0f) < 0.01f);
 	assert(std::fabs(visibility_shoulder_offset_units(0.05f, tuning) - 24.0f) < 0.01f);
@@ -271,70 +262,73 @@ void test_visibility_sampling()
 	assert(std::fabs(visibility_shoulder_offset_units(0.2f, tuning) - 96.0f) < 0.01f);
 	assert(std::fabs(visibility_shoulder_offset_units(0.3f, tuning) - 96.0f) < 0.01f);
 
-	assert(visibility_prediction_offset({0, 0, 0}, 0.15f, 96.0f).x == 0.0f);
-	assert(visibility_prediction_offset({74, 0, 0}, 0.15f, 96.0f).x == 0.0f);
-	assert(visibility_prediction_offset({75, 0, 0}, 0.15f, 96.0f).x == 0.0f);
-	assert(std::fabs(visibility_prediction_offset({87.5f, 0, 0}, 0.15f, 96.0f).x - 6.5625f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({99, 0, 0}, 0.15f, 96.0f).x - 14.256f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({100, 0, 0}, 0.15f, 96.0f).x - 15.0f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({215, 0, 0}, 0.075f, 96.0f).x - 16.125f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({215, 0, 0}, 0.15f, 96.0f).x - 32.25f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({215, 0, 0}, 0.225f, 96.0f).x - 48.375f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({215, 0, 0}, 0.3f, 96.0f).x - 64.5f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({215, 0, 0}, 0.375f, 96.0f).x - 80.625f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({250, 0, 0}, 0.375f, 96.0f).x - 93.75f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({320, 0, 0}, 0.375f, 96.0f).x - 96.0f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({350, 0, 0}, 0.375f, 96.0f).x - 96.0f) < 0.01f);
-	assert(std::fabs(visibility_prediction_offset({500, 0, 0}, 0.375f, 96.0f).x - 96.0f) < 0.01f);
-	assert(visibility_prediction_offset({215, 0, 0}, 0.375f, 0.0f).x == 0.0f);
-	const vec3 diagonal = visibility_prediction_offset({300, 400, 0}, 0.1f, 96.0f);
-	assert(std::fabs(diagonal.x - 21.0f) < 0.01f && std::fabs(diagonal.y - 28.0f) < 0.01f);
-
-	player.velocity = {100, 0, 0};
-	auto origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(k_visibility_origin_count == 8);
-	assert(k_visibility_ray_count_max == 384);
-	assert(std::fabs(origins[1].x - 7.5f) < 0.01f && origins[1].y == 0.0f);
-	assert(std::fabs(origins[2].y - 16.0f) < 0.01f);
-	assert(std::fabs(origins[3].y + 16.0f) < 0.01f);
-	assert(std::fabs(origins[4].x - 7.5f) < 0.01f && std::fabs(origins[4].y - 16.0f) < 0.01f);
-	assert(std::fabs(origins[5].x - 7.5f) < 0.01f && std::fabs(origins[5].y + 16.0f) < 0.01f);
-	assert(std::fabs(origins[6].z - 16.0f) < 0.01f);
-	assert(std::fabs(origins[7].x - 7.5f) < 0.01f && std::fabs(origins[7].z - 16.0f) < 0.01f);
+	auto origins = visibility_origins(open, player, tuning);
+	assert(k_visibility_origin_count_max == 6);
+	assert(k_visibility_target_count_max == 24);
+	assert(k_visibility_ray_count_max == 144);
+	assert(origins.count == 5);
+	assert(origins.points[0].x == 0.0f && origins.points[0].z == 64.0f);
+	assert(std::fabs(origins.points[1].y - 16.0f) < 0.01f);
+	assert(std::fabs(origins.points[2].y + 16.0f) < 0.01f);
+	assert(std::fabs(origins.points[3].z - 80.0f) < 0.01f);
+	assert(origins.points[4].x == player.origin.x && origins.points[4].y == player.origin.y
+		&& origins.points[4].z == player.origin.z);
 	player.rtt_seconds = 0.05f;
-	origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(player.rtt_seconds, tuning), tuning);
-	assert(std::fabs(origins[2].y - 24.0f) < 0.01f && std::fabs(origins[3].y + 24.0f) < 0.01f);
-	assert(std::fabs(origins[4].y - 24.0f) < 0.01f && std::fabs(origins[5].y + 24.0f) < 0.01f);
+	origins = visibility_origins(open, player, tuning);
+	assert(std::fabs(origins.points[1].y - 24.0f) < 0.01f && std::fabs(origins.points[2].y + 24.0f) < 0.01f);
 	player.rtt_seconds = 0.0f;
 
-	player.velocity = {};
 	player.eye_yaw_degrees = 90.0f;
-	origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(std::fabs(origins[2].x + 16.0f) < 0.01f);
-	assert(std::fabs(origins[3].x - 16.0f) < 0.01f);
+	origins = visibility_origins(open, player, tuning);
+	assert(std::fabs(origins.points[1].x + 16.0f) < 0.01f);
+	assert(std::fabs(origins.points[2].x - 16.0f) < 0.01f);
 	player.eye_yaw_degrees = 0.0f;
 
-	player.velocity = {0, 100, 0};
-	origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(std::fabs(origins[1].y - 7.5f) < 0.01f);
+	player.movement_buttons = k_visibility_button_forward;
+	origins = visibility_origins(open, player, tuning);
+	assert(origins.count == 6 && std::fabs(origins.points[5].x - 16.0f) < 0.01f);
+	player.movement_buttons = k_visibility_button_back;
+	origins = visibility_origins(open, player, tuning);
+	assert(origins.count == 6 && std::fabs(origins.points[5].x + 16.0f) < 0.01f);
+	player.movement_buttons = k_visibility_button_left;
+	assert(visibility_origins(open, player, tuning).count == 5);
+	player.movement_buttons = k_visibility_button_right;
+	assert(visibility_origins(open, player, tuning).count == 5);
 
-	player.velocity = {1000, 0, 0};
-	origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(std::fabs(origins[1].x - 26.25f) < 0.01f);
-
-	visibility_tuning disabled = tuning;
-	disabled.max_lookahead_ms = 0;
-	assert(visibility_effective_lookahead_seconds(0.2f, disabled) == 0.0f);
-	origins = visibility_origins(open, player, visibility_effective_lookahead_seconds(0.0f, disabled), disabled);
-	assert(origins[1].x == player.eye.x && origins[1].y == player.eye.y && origins[1].z == player.eye.z);
+	const float diagonal = 16.0f / std::sqrt(2.0f);
+	const std::array<std::pair<uint64_t, vec3>, 4> diagonals {{
+		{k_visibility_button_forward | k_visibility_button_left, {diagonal, diagonal, 64}},
+		{k_visibility_button_forward | k_visibility_button_right, {diagonal, -diagonal, 64}},
+		{k_visibility_button_back | k_visibility_button_left, {-diagonal, diagonal, 64}},
+		{k_visibility_button_back | k_visibility_button_right, {-diagonal, -diagonal, 64}}
+	}};
+	for (const auto &[buttons, expected] : diagonals)
+	{
+		player.movement_buttons = buttons;
+		origins = visibility_origins(open, player, tuning);
+		assert(origins.count == 6);
+		assert(std::fabs(origins.points[5].x - expected.x) < 0.01f
+			&& std::fabs(origins.points[5].y - expected.y) < 0.01f);
+	}
+	player.movement_buttons = k_visibility_button_forward | k_visibility_button_back;
+	assert(visibility_origins(open, player, tuning).count == 5);
+	player.movement_buttons |= k_visibility_button_left;
+	assert(visibility_origins(open, player, tuning).count == 5);
+	player.movement_buttons = k_visibility_button_forward | k_visibility_button_left | k_visibility_button_right;
+	origins = visibility_origins(open, player, tuning);
+	assert(origins.count == 6 && std::fabs(origins.points[5].x - 16.0f) < 0.01f);
+	player.movement_buttons = k_visibility_button_forward;
+	player.eye_yaw_degrees = 90.0f;
+	origins = visibility_origins(open, player, tuning);
+	assert(origins.count == 6 && std::fabs(origins.points[5].y - 16.0f) < 0.01f);
+	player.eye_yaw_degrees = 0.0f;
 
 	const bvh8_data wall = test_world({
 		{{4, -100, -100}, {4, 100, -100}, {4, -100, 100}},
 		{{4, 100, 100}, {4, -100, 100}, {4, 100, -100}}
 	});
-	player.velocity = {100, 0, 0};
-	origins = visibility_origins(wall, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(origins[1].x > 3.9f && origins[1].x < 4.1f);
+	origins = visibility_origins(wall, player, tuning);
+	assert(origins.count == 6 && origins.points[5].x > 3.9f && origins.points[5].x < 4.1f);
 	const vec3 clipped_short = visibility_clip_destination(wall, {}, {5, 0, 0});
 	const vec3 clipped_long = visibility_clip_destination(wall, {}, {20, 0, 0});
 	assert(clipped_short.x > 3.9f && clipped_short.x < 4.1f);
@@ -344,77 +338,55 @@ void test_visibility_sampling()
 		{{-100, -8, -100}, {100, -8, -100}, {-100, -8, 100}},
 		{{100, -8, 100}, {-100, -8, 100}, {100, -8, -100}}
 	});
-	player.velocity = {};
-	origins = visibility_origins(side_wall, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(origins[3].x == player.eye.x && origins[3].y == player.eye.y && origins[3].z == player.eye.z);
+	player.movement_buttons = k_visibility_button_right;
+	origins = visibility_origins(side_wall, player, tuning);
+	assert(origins.count == 4);
 
 	const bvh8_data ceiling = test_world({
-		{{-100, -100, 8}, {100, -100, 8}, {-100, 100, 8}},
-		{{100, 100, 8}, {-100, 100, 8}, {100, -100, 8}}
+		{{-100, -100, 72}, {100, -100, 72}, {-100, 100, 72}},
+		{{100, 100, 72}, {-100, 100, 72}, {100, -100, 72}}
 	});
-	origins = visibility_origins(ceiling, player, visibility_effective_lookahead_seconds(0.0f, tuning), tuning);
-	assert(origins[6].x == player.eye.x && origins[6].y == player.eye.y && origins[6].z == player.eye.z);
+	player.movement_buttons = 0;
+	origins = visibility_origins(ceiling, player, tuning);
+	assert(origins.count == 4);
 
 	visibility_player target {};
 	target.origin = {0, 0, 0};
 	target.mins = {-16, -16, 0};
 	target.maxs = {16, 16, 72};
-	target.velocity = {200, 0, 0};
 	target.muzzle_class = weapon_muzzle_class::rifle;
-	const auto current_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
-	const auto no_recipient_lookahead = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
-	const auto swept_targets = visibility_targets(open, target,
-		visibility_effective_lookahead_seconds(0.0f, tuning), tuning.max_prediction_units);
+	const auto current_targets = visibility_targets(target);
 	assert(current_targets.count == 24);
-	assert(no_recipient_lookahead.count == 24);
-	assert(swept_targets.count == 48);
 	assert(std::fabs(min_x(current_targets) + 20.0f) < 0.01f);
 	assert(std::fabs(max_x(current_targets) - 36.0f) < 0.01f);
 	assert(current_targets.points[0].z == 0.0f && current_targets.points[7].z == 76.0f);
-	assert(std::fabs(swept_targets.points[0].x + 20.0f) < 0.01f);
-	assert(std::fabs(swept_targets.points[7].x - 20.0f) < 0.01f);
-	assert(std::fabs(swept_targets.points[8].x + 5.0f) < 0.01f);
-	assert(std::fabs(swept_targets.points[15].x - 35.0f) < 0.01f);
-	assert(std::fabs(max_x(no_recipient_lookahead) - max_x(current_targets)) < 0.01f);
-	assert(max_x(swept_targets) > max_x(current_targets) + 9.0f);
 
 	target.muzzle_class = weapon_muzzle_class::none;
-	const auto no_muzzle_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
-	const auto no_muzzle_swept_targets = visibility_targets(open, target,
-		visibility_effective_lookahead_seconds(0.0f, tuning), tuning.max_prediction_units);
+	const auto no_muzzle_targets = visibility_targets(target);
 	assert(no_muzzle_targets.count == 23);
-	assert(no_muzzle_swept_targets.count == 46);
 	target.muzzle_class = weapon_muzzle_class::rifle;
-
-	target.velocity = {100, 0, 0};
-	const auto blocked_target_prediction = visibility_targets(wall, target,
-		visibility_effective_lookahead_seconds(0.0f, tuning), tuning.max_prediction_units);
-	assert(blocked_target_prediction.count == 48);
-	assert(blocked_target_prediction.points[15].x > 23.9f && blocked_target_prediction.points[15].x < 24.1f);
-
-	target.velocity = {};
 	target.eye_yaw_degrees = 0.0f;
-	const auto yaw0_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
+	const auto yaw0_targets = visibility_targets(target);
 	const vec3 yaw0_head = yaw0_targets.points[8];
 	assert(std::fabs(yaw0_head.x - 5.6092f) < 0.01f);
 	assert(std::fabs(yaw0_head.y + 1.4428f) < 0.01f);
 	assert(std::fabs(yaw0_head.z - 64.2013f) < 0.01f);
 
 	target.eye_yaw_degrees = 90.0f;
-	const auto yaw90_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
+	const auto yaw90_targets = visibility_targets(target);
 	const vec3 yaw90_head = yaw90_targets.points[8];
 	assert(std::fabs(yaw90_head.x - 1.4428f) < 0.01f);
 	assert(std::fabs(yaw90_head.y - 5.6092f) < 0.01f);
 
 	target.eye_yaw_degrees = 180.0f;
-	const auto yaw180_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
+	const auto yaw180_targets = visibility_targets(target);
 	const vec3 yaw180_head = yaw180_targets.points[8];
 	assert(std::fabs(yaw180_head.x + 5.6092f) < 0.01f);
 	assert(std::fabs(yaw180_head.y - 1.4428f) < 0.01f);
 
 	target.eye_yaw_degrees = 0.0f;
 	target.maxs.z = 54.0f;
-	const auto crouched_targets = visibility_targets(open, target, 0.0f, tuning.max_prediction_units);
+	const auto crouched_targets = visibility_targets(target);
 	const vec3 crouched_head = crouched_targets.points[8];
 	const vec3 crouched_left_foot = crouched_targets.points[18];
 	const vec3 crouched_muzzle = crouched_targets.points[23];
@@ -435,10 +407,8 @@ void test_visibility_sampling()
 
 	using clock = std::chrono::steady_clock;
 	const auto start = clock::time_point {} + std::chrono::seconds(1);
-	assert(visibility_snapshot_fresh(start, start + std::chrono::milliseconds(74), 0.075f));
-	assert(!visibility_snapshot_fresh(start, start + std::chrono::milliseconds(75), 0.075f));
-	assert(visibility_snapshot_fresh(start, start + std::chrono::milliseconds(100), 0.0f));
-	assert(!visibility_snapshot_fresh(start, start + std::chrono::milliseconds(101), 0.0f));
+	assert(visibility_snapshot_fresh(start, start + std::chrono::milliseconds(100)));
+	assert(!visibility_snapshot_fresh(start, start + std::chrono::milliseconds(101)));
 }
 
 void test_visibility_worker()
@@ -454,9 +424,9 @@ void test_visibility_worker()
 	});
 	visibility_snapshot value;
 	value.sequence = 1;
-	value.players[0] = {true, 2, {0, 0, 64}, {0, 0, 0}, {}, {-16, -16, 0}, {16, 16, 72}};
-	value.players[1] = {true, 3, {64, 0, 64}, {64, 0, 0}, {}, {-16, -16, 0}, {16, 16, 72}};
-	const visibility_tuning tuning {75, 1.5f, 375, 96.0f, 16.0f, 0.48f, 96.0f};
+	value.players[0] = {true, 2, {0, 0, 64}, {0, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
+	value.players[1] = {true, 3, {64, 0, 64}, {64, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
+	const visibility_tuning tuning {16.0f, 0.48f, 96.0f};
 
 	auto worker = std::make_unique<visibility_worker>();
 	worker->start(&wall);
@@ -518,8 +488,8 @@ void test_visibility_worker()
 	smokes->volumes.back().density.fill(50.0f);
 	value.sequence = 7;
 	value.captured = std::chrono::steady_clock::now();
-	value.players[0] = {true, 2, {0, 0, 64}, {0, 0, 0}, {}, {-16, -16, 0}, {16, 16, 72}};
-	value.players[1] = {true, 2, {64, 0, 64}, {64, 0, 0}, {200, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
+	value.players[0] = {true, 2, {0, 0, 64}, {0, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
+	value.players[1] = {true, 2, {64, 0, 64}, {64, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
 	value.filter_teammates = true;
 	value.smoke_enabled = true;
 	value.smoke_available = true;
@@ -827,7 +797,7 @@ void test_hidden_entity_group()
 double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 {
 	constexpr uint32_t k_players = 32;
-	const visibility_tuning tuning {75, 1.5f, 375, 96.0f, 16.0f, 0.48f, 96.0f};
+	const visibility_tuning tuning {16.0f, 0.48f, 96.0f};
 	std::mt19937 random(0x51f0u);
 	std::uniform_real_distribution<float> x(data.header.world_min[0], data.header.world_max[0]);
 	std::uniform_real_distribution<float> y(data.header.world_min[1], data.header.world_max[1]);
@@ -839,11 +809,11 @@ double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 		players[i] = {
 			{origin.x, origin.y, origin.z + 64.0f},
 			origin,
-			{i % 2u == 0 ? 250.0f : -250.0f, 0.0f, 0.0f},
 			{-16.0f, -16.0f, 0.0f},
 			{16.0f, 16.0f, 72.0f},
 			static_cast<float>(i % 8u) * 45.0f,
 			static_cast<float>(i % 4u) * 0.025f,
+			i % 3u == 0 ? k_visibility_button_forward | k_visibility_button_left : k_visibility_button_forward,
 			weapon_muzzle_class::rifle
 		};
 	}
@@ -871,12 +841,10 @@ double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 	for (double &timing : timings)
 	{
 		const auto start = std::chrono::steady_clock::now();
-		std::array<float, k_players> lookahead {};
-		std::array<std::array<vec3, k_visibility_origin_count>, k_players> origins {};
+		std::array<visibility_origin_points, k_players> origins {};
 		for (uint32_t recipient = 0; recipient < k_players; ++recipient)
 		{
-			lookahead[recipient] = visibility_effective_lookahead_seconds(players[recipient].rtt_seconds, tuning);
-			origins[recipient] = visibility_origins(data, players[recipient], lookahead[recipient], tuning);
+			origins[recipient] = visibility_origins(data, players[recipient], tuning);
 		}
 		for (uint32_t recipient = 0; recipient < k_players; ++recipient)
 		{
@@ -886,11 +854,12 @@ double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 				{
 					continue;
 				}
-				const auto targets = visibility_targets(data, players[target], lookahead[recipient], tuning.max_prediction_units);
+				const auto targets = visibility_targets(players[target]);
 				bool blocked = true;
 				uint32_t ray = 0;
-				for (const vec3 &origin : origins[recipient])
+				for (uint32_t origin_index = 0; origin_index < origins[recipient].count; ++origin_index)
 				{
+					const vec3 &origin = origins[recipient].points[origin_index];
 					for (uint32_t point_index = 0; point_index < targets.count; ++point_index)
 					{
 						const vec3 &point = targets.points[point_index];

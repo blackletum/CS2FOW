@@ -29,11 +29,11 @@ struct player_state
 	uint8_t team {};
 	vec3 eye;
 	vec3 origin;
-	vec3 velocity;
 	vec3 mins;
 	vec3 maxs;
 	float eye_yaw_degrees {};
 	float rtt_seconds {};
+	uint64_t movement_buttons {};
 	weapon_muzzle_class muzzle_class {weapon_muzzle_class::none};
 	int pawn_entity {-1};
 };
@@ -44,7 +44,7 @@ inline bool valid_player_numbers(const player_state &player)
 	{
 		return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 	};
-	return finite(player.origin) && finite(player.eye) && finite(player.velocity) && finite(player.mins) && finite(player.maxs)
+	return finite(player.origin) && finite(player.eye) && finite(player.mins) && finite(player.maxs)
 		&& std::isfinite(player.eye_yaw_degrees) && std::isfinite(player.rtt_seconds)
 		&& player.mins.x <= player.maxs.x && player.mins.y <= player.maxs.y && player.mins.z <= player.maxs.z;
 }
@@ -77,7 +77,6 @@ struct visibility_result
 	std::chrono::steady_clock::time_point captured;
 	std::chrono::steady_clock::time_point completed;
 	player_state players[k_max_players];
-	float recipient_lookahead_seconds[k_max_players] {};
 	bool filter_teammates {};
 	bool smoke_enabled {};
 	bool smoke_available {};
@@ -91,14 +90,9 @@ struct visibility_result
 };
 
 inline bool visibility_snapshot_fresh(std::chrono::steady_clock::time_point captured,
-	std::chrono::steady_clock::time_point now, float lookahead_seconds)
+	std::chrono::steady_clock::time_point now)
 {
-	const auto age = now - captured;
-	if (age > std::chrono::milliseconds(100))
-	{
-		return false;
-	}
-	return lookahead_seconds <= 0.0f || age < std::chrono::duration<float>(lookahead_seconds);
+	return now - captured <= std::chrono::milliseconds(100);
 }
 
 struct worker_stats

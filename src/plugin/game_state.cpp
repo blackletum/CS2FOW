@@ -52,6 +52,12 @@ bool resolve_field(ISchemaSystem *schema, const char *class_name, const char *fi
 	return find_declared_field(scope->FindDeclaredClass(class_name).Get(), field_name, offset);
 }
 
+bool resolve_global_field(ISchemaSystem *schema, const char *class_name, const char *field_name, uint32_t &offset)
+{
+	CSchemaSystemTypeScope *scope = schema->GlobalTypeScope();
+	return scope != nullptr && find_declared_field(scope->FindDeclaredClass(class_name).Get(), field_name, offset);
+}
+
 vec3 to_vec3(const Vector &value)
 {
 	return {value.x, value.y, value.z};
@@ -112,6 +118,19 @@ bool plugin::resolve_schema(std::string &error)
 	{
 		return resolve_field(schema_, class_name, field_name, target);
 	};
+	auto require_global = [&](uint32_t &target, const char *class_name, const char *field_name)
+	{
+		if (!resolve_global_field(schema_, class_name, field_name, target))
+		{
+			if (!error.empty())
+			{
+				error += ", ";
+			}
+			error += class_name;
+			error += "::";
+			error += field_name;
+		}
+	};
 	require(fields_.is_hltv, "CBasePlayerController", "m_bIsHLTV");
 	require(fields_.player_pawn, "CCSPlayerController", "m_hPlayerPawn");
 	require(fields_.pawn_controller, "CBasePlayerPawn", "m_hController");
@@ -122,7 +141,9 @@ bool plugin::resolve_schema(std::string &error)
 	require(fields_.body_component, "CBaseEntity", "m_CBodyComponent");
 	require(fields_.scene_node, "CBodyComponent", "m_pSceneNode");
 	require(fields_.abs_origin, "CGameSceneNode", "m_vecAbsOrigin");
-	require(fields_.abs_velocity, "CBaseEntity", "m_vecAbsVelocity");
+	require(fields_.movement_services, "CBasePlayerPawn", "m_pMovementServices");
+	require(fields_.movement_buttons, "CPlayer_MovementServices", "m_nButtons");
+	require_global(fields_.button_states, "CInButtonState", "m_pButtonStates");
 	require(fields_.view_offset, "CBaseModelEntity", "m_vecViewOffset");
 	require(fields_.view_x, "CNetworkViewOffsetVector", "m_vecX");
 	require(fields_.view_y, "CNetworkViewOffsetVector", "m_vecY");
@@ -440,12 +461,16 @@ bool plugin::capture(visibility_snapshot &value, float game_time)
 		player.team = live.team;
 		player.pawn_entity = live.pawn_entity;
 		player.origin = to_vec3(field<Vector>(scene_node, fields_.abs_origin));
-		player.velocity = to_vec3(field<Vector>(pawn_entity, fields_.abs_velocity));
 		player.mins = to_vec3(field<Vector>(collision, fields_.mins));
 		player.maxs = to_vec3(field<Vector>(collision, fields_.maxs));
 		void *view = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(pawn_entity) + fields_.view_offset);
 		player.eye = {player.origin.x + field<float>(view, fields_.view_x), player.origin.y + field<float>(view, fields_.view_y), player.origin.z + field<float>(view, fields_.view_z)};
 		player.eye_yaw_degrees = field<qangle>(pawn_entity, fields_.eye_angles).y;
+		if (void *movement = field<void *>(pawn_entity, fields_.movement_services); movement != nullptr)
+		{
+			void *buttons = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(movement) + fields_.movement_buttons);
+			player.movement_buttons = field<uint64_t>(buttons, fields_.button_states);
+		}
 		player.muzzle_class = active_weapon_muzzle_class(system, pawn_entity);
 		if (INetChannelInfo *channel = engine_->GetPlayerNetInfo(CPlayerSlot(static_cast<int>(slot))); channel != nullptr)
 		{
