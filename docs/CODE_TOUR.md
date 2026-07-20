@@ -61,7 +61,7 @@ It explains the intent of the code. The engine and file-format details are still
 | `src/core/subprocess.*` | Start external tools with argument lists, timeouts, cancellation, and captured output. |
 | `src/baker/` | Command-line bake sequence and physics-GLB import. |
 | `tests/` | Small assert-based tests grouped into map/BVH and visibility/transmit responsibilities. |
-| `tools/visibility_point_editor/` | Local browser tool for the LOS body, AABB, and muzzle samples only. |
+| `tools/visibility_point_editor/` | Local browser Studio for editing LOS points and simulating the runtime's BVH8, movement, visibility, smoke, and HE behavior. |
 | `cfg/`, `gamedata/`, `data/` | Shipped settings, platform offsets, and optional map bakes. |
 
 ## Bake flow
@@ -184,7 +184,7 @@ references/metamod-source
 references/hl2sdk-cs2
 ```
 
-The exact CI commits are in `.github/workflows/build.yml`.
+The exact CI commits are in `.github/workflows/build.yml` and `.gitlab-ci.yml`.
 
 Windows from a developer command prompt:
 
