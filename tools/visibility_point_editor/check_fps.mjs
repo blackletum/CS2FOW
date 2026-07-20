@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {
-	FPS_CONSTANTS, FPS_DT, FpsSimulation, make_test_smoke, move_actor,
-	resolve_capsule, route_between, smoke_line_blocked, validate_nav
+	default_targets, FPS_CONSTANTS, FPS_DT, FpsSimulation, make_test_smoke, move_actor,
+	resolve_capsule, route_between, smoke_line_blocked, target_muzzle, validate_nav, weapon_muzzle_length
 } from "./fps_runtime.js";
 
 const floor = {
@@ -131,6 +132,10 @@ assert.equal(smoke_line_blocked(openMap, [smoke], [{center: {x: 0, y: 0, z: 64},
 	"HE before smoke cannot clear it");
 assert.equal(smoke_line_blocked(openMap, [smoke], [{center: {x: 0, y: 0, z: 64}, time: 1}], rayStart, rayEnd, 3.5), true,
 	"HE clearance expires at 2.5 seconds");
+assert.equal(smoke_line_blocked(openMap, [smoke], [{center: {x: 0, y: 50, z: 64}, time: 1}], rayStart, rayEnd, 2,
+	[], {heRadius: 20, heSeconds: 4}), true, "configured HE radius must control smoke clearing");
+assert.equal(smoke_line_blocked(openMap, [smoke], [{center: {x: 0, y: 0, z: 64}, time: 1}], rayStart, rayEnd, 2,
+	[], {heRadius: 0, heSeconds: 4}), true, "zero HE radius must disable smoke clearing like the runtime");
 assert.equal(smoke_line_blocked(openMap, [smoke], [], rayStart, rayEnd, 22.5), false, "smoke fade completes safely");
 
 const splitMap = test_map();
@@ -159,13 +164,41 @@ assert.deepEqual(nav.objectives.b, {x: 256, y: 64, z: 0});
 assert.equal(route_between(nav, {x: 0, y: 0, z: 0}, {x: 256, y: 0, z: 0}).length, 2);
 assert.throws(() => validate_nav({version: 1, areas: [{id: 1, corners: [], connections: []}]}), /invalid/i);
 
+const nativeTargets = default_targets({origin: {x: 10, y: 20, z: 30}, yaw: 90, crouched: false}, weapon_muzzle_length("m4a1_silencer"));
+assert.equal(nativeTargets.length / 3, 24, "an armed target should include AABB, body, and muzzle points");
+assert.ok(Math.abs(nativeTargets[24] - 11.442827850214244) < 0.001 && Math.abs(nativeTargets[25] - 25.609201635493794) < 0.001,
+	"native fallback body points must rotate with target yaw");
+const nativeMuzzle = target_muzzle({origin: {x: 10, y: 20, z: 30}, yaw: 90, crouched: false}, 36);
+assert.ok(Math.abs(nativeMuzzle.x - 10) < 0.001 && Math.abs(nativeMuzzle.y - 56) < 0.001 && nativeMuzzle.z === 90);
+const interpolatedMuzzle = target_muzzle({origin: {x: 0, y: 0, z: 0}, yaw: 0, height: 54}, 36);
+assert.ok(interpolatedMuzzle.z > 38 && interpolatedMuzzle.z < 60, "interpolated stance height must move the muzzle smoothly");
+const crouchedTargets = default_targets({origin: {x: 0, y: 0, z: 0}, yaw: 0, crouched: true});
+assert.equal(crouchedTargets[14], FPS_CONSTANTS.crouchedHeight + 8, "crouched AABB must use the simulated live hull");
+const preset = JSON.parse(readFileSync(new URL("./default_sas_visibility_points.json", import.meta.url), "utf8"));
+const fallbackTargets = default_targets({origin: {x: 0, y: 0, z: 0}, yaw: 0, crouched: false});
+assert.ok(preset.points.every((point, index) => [point.x, point.y, point.z].every((value, axis) =>
+	Math.abs(fallbackTargets[(index + 8) * 3 + axis] - value) < 0.0001)),
+	"worker fallback body points must match the compiled Studio preset");
+
 const simulation = new FpsSimulation(openMap, {
 	viewer: {x: -300, y: 0, z: 0.02, yaw: 0},
 	target: {x: 300, y: 0, z: 0.02, yaw: 180},
 	playerSpeed: 225,
 	botSpeed: 225,
-	pingMs: 200
+	pingMs: 200,
+	botMuzzleLength: 36
 });
+const seededSettings = {
+	viewer: {x: -300, y: 0, z: 0.02, yaw: 0}, target: {x: 300, y: 0, z: 0.02, yaw: 180}, seed: 1234
+};
+assert.deepEqual(new FpsSimulation(openMap, seededSettings).bots.map((bot) => bot.yaw),
+	new FpsSimulation(openMap, seededSettings).bots.map((bot) => bot.yaw), "bot simulation seed must reproduce random choices");
+const animatedTargetSimulation = new FpsSimulation(openMap, seededSettings);
+const animatedTargetSets = animatedTargetSimulation.bots.map((_, index) => new Float32Array([index + 1, index + 2, index + 3]));
+animatedTargetSimulation.set_targets(animatedTargetSets);
+for (let index = 0; index < animatedTargetSets.length; ++index)
+	assert.deepEqual(animatedTargetSimulation.visibility(animatedTargetSimulation.bots[index], index).targets,
+		animatedTargetSets[index], `bot ${index + 1} must use its animated target set`);
 simulation.set_input({w: true, a: true});
 const state = simulation.step();
 assert.equal(state.bots.length, 3, "Play should simulate three terrorist bots");
@@ -178,8 +211,14 @@ for (let left = 0; left < state.bots.length; ++left)
 			state.bots[left].origin.y - state.bots[right].origin.y) >= 1000,
 		"extra bot spawns should be separated by at least 1000 units");
 assert.equal(state.visibility.origins.length / 3, 6);
-assert.equal(state.visibility.targets.length / 3, 23);
-assert.equal(state.visibility.blocked.length, 138);
+assert.equal(state.visibility.targets.length / 3, 24);
+assert.equal(state.visibility.blocked.length, 144);
+assert.ok(state.visibilities.every((visibility) => visibility.targets.length / 3 === 24),
+	"every armed bot needs the native muzzle target");
+simulation.player.crouched = true;
+const crouchedVisibility = simulation.visibility(simulation.bot, 0);
+assert.ok(Math.abs(crouchedVisibility.origins[2] - (simulation.player.origin.z + 28.5)) < 0.001,
+	"crouched visibility must originate from the crouched eye");
 simulation.request_traversal();
 const traversalState = simulation.step();
 assert.equal(traversalState.visibilities.filter((visibility) => visibility.traversal).length, 3,

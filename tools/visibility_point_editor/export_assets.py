@@ -7,6 +7,7 @@ writes only local_assets/, and never changes runtime visibility points.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
@@ -153,7 +154,9 @@ VIEWMODEL_ANIMATIONS = {
 
 PLAYER_MODELS = {"ct_sas", "t_phoenix"}
 
-GLTF_TRANSFORM = "@gltf-transform/cli@4.4.1"
+GLTF_TRANSFORM_VERSION = "4.4.1"
+EXPORT_RECIPE_VERSION = 12
+NAV_RECIPE_VERSION = 2
 STUDIO_ANIMATIONS = {
     "tools_preview",
     *(
@@ -257,9 +260,10 @@ def slim_sas_model(source: Path, keep_all_animations: bool) -> Path:
             ("resample", pruned, resampled),
         ):
             result = subprocess.run(
-                [npx, "--yes", GLTF_TRANSFORM, *(str(value) for value in args)],
+                [npx, "--no-install", "gltf-transform", *(str(value) for value in args)],
                 text=True,
                 capture_output=True,
+                cwd=VIEWER,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"glTF Transform failed\n{result.stdout}\n{result.stderr}")
@@ -420,12 +424,16 @@ def export_viewmodel_animation(vrf: Path, game: Path, key: str, action: str, res
     return clips[0].relative_to(VIEWER).as_posix()
 
 
-def source_fingerprint(game: Path, vrf: Path) -> str:
+def update_stat_fingerprint(digest, path: Path, label: str) -> None:
+    stat = path.stat()
+    digest.update(f"{label}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+
+
+def asset_source_fingerprint(game: Path, vrf: Path) -> str:
     digest = hashlib.sha256()
-    for path in [game / "pak01_dir.vpk", vrf, *sorted((game / "maps").glob("*.vpk"))]:
-        stat = path.stat()
-        digest.update(str(path.resolve()).encode())
-        digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+    update_stat_fingerprint(digest, game / "pak01_dir.vpk", "pak01_dir.vpk")
+    update_stat_fingerprint(digest, vrf, "vrf")
+    digest.update(f"recipe={EXPORT_RECIPE_VERSION}\ngltf-transform={GLTF_TRANSFORM_VERSION}\n".encode())
     digest.update(json.dumps(MODELS, sort_keys=True).encode())
     digest.update(json.dumps(SOUNDS, sort_keys=True).encode())
     digest.update(json.dumps(VIEWMODEL_ANIMATIONS, sort_keys=True).encode())
@@ -433,6 +441,19 @@ def source_fingerprint(game: Path, vrf: Path) -> str:
     digest.update(json.dumps(MATERIAL_TEXTURES, sort_keys=True).encode())
     digest.update(json.dumps(HUD_ICONS, sort_keys=True).encode())
     digest.update(json.dumps({"required": sorted(STUDIO_ANIMATIONS), "ct_library": "all"}).encode())
+    return digest.hexdigest()
+
+
+def map_source_fingerprint(game: Path, vrf: Path) -> str:
+    digest = hashlib.sha256()
+    update_stat_fingerprint(digest, vrf, "vrf")
+    digest.update(f"nav-recipe={NAV_RECIPE_VERSION}\n".encode())
+    for source in (VIEWER / "nav_exporter" / "Program.cs", VIEWER / "nav_exporter" / "NavExporter.csproj"):
+        digest.update(source.name.encode() + b"\0" + source.read_bytes())
+    baked_maps = {path.stem for path in (ROOT / "data" / "maps").glob("*.bvh8")}
+    for path in sorted((game / "maps").glob("*.vpk")):
+        if path.stem in baked_maps:
+            update_stat_fingerprint(digest, path, path.name)
     return digest.hexdigest()
 
 
@@ -510,50 +531,71 @@ def main() -> int:
         raise SystemExit(f"missing VRF CLI: {args.vrf}")
 
     LOCAL_ASSETS.mkdir(parents=True, exist_ok=True)
-    fingerprint = source_fingerprint(args.game, args.vrf)
+    asset_fingerprint = asset_source_fingerprint(args.game, args.vrf)
+    map_fingerprint = map_source_fingerprint(args.game, args.vrf)
     manifest_path = LOCAL_ASSETS / "manifest.json"
+    previous: dict = {}
     if manifest_path.is_file():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        previous_paths = [
-            *previous.get("models", {}).values(),
-            *(path for value in previous.get("sounds", {}).values() for path in (value if isinstance(value, list) else [value])),
-            *previous.get("maps", {}).values(),
-            *(path for actions in previous.get("animations", {}).values() for path in actions.values()),
-            *(path for frames in previous.get("particles", {}).values() for path in frames),
-            *previous.get("materials", {}).values(),
-            *previous.get("icons", {}).values(),
-        ]
-        if previous.get("version", 0) >= 11 and previous.get("source_fingerprint") == fingerprint and all(
-            (VIEWER / path).is_file()
-            for path in previous_paths
-        ):
-            print(f"local Studio assets are current: {manifest_path}")
-            return 0
 
-    manifest = {"version": 11, "game": str(args.game), "source_fingerprint": fingerprint, "models": {}, "sounds": {}, "animations": {}, "particles": {}, "materials": {}, "icons": {}, "maps": {}, "resources": {"models": MODELS, "sounds": SOUNDS, "animations": VIEWMODEL_ANIMATIONS, "particles": PARTICLE_TEXTURES, "materials": MATERIAL_TEXTURES, "icons": HUD_ICONS}}
-    previous_current = "previous" in locals() and previous.get("source_fingerprint") == fingerprint
-    for key, resource in MODELS.items():
-        previous_path = previous.get("models", {}).get(key) if previous_current else None
-        if previous_path and (VIEWER / previous_path).is_file():
-            manifest["models"][key] = previous_path
-        else:
-            manifest["models"][key] = export_model(args.vrf, args.game, key, resource)
-    for key, resources in SOUNDS.items():
-        manifest["sounds"][key] = export_sounds(args.vrf, args.game, key, resources)
-    for key, actions in VIEWMODEL_ANIMATIONS.items():
-        manifest["animations"][key] = {
-            action: export_viewmodel_animation(args.vrf, args.game, key, action, resource)
-            for action, resource in actions.items()
-        }
-    for key, resource in PARTICLE_TEXTURES.items():
-        manifest["particles"][key] = export_particle_texture(args.vrf, args.game, key, resource)
-    for key, resource in MATERIAL_TEXTURES.items():
-        manifest["materials"][key] = export_material_texture(args.vrf, args.game, key, resource)
-    for key, resource in HUD_ICONS.items():
-        manifest["icons"][key] = export_hud_icon(args.vrf, args.game, key, resource)
-    previous_maps = previous.get("maps", {}) if "previous" in locals() else {}
-    previous_version = previous.get("version", 0) if "previous" in locals() else 0
-    manifest["maps"] = previous_maps if previous_version >= 6 and previous_maps and all((VIEWER / path).is_file() for path in previous_maps.values()) else export_nav_graphs(args.vrf, args.game)
+    asset_paths = [
+        *previous.get("models", {}).values(),
+        *(path for value in previous.get("sounds", {}).values() for path in (value if isinstance(value, list) else [value])),
+        *(path for actions in previous.get("animations", {}).values() for path in actions.values()),
+        *(path for frames in previous.get("particles", {}).values() for path in frames),
+        *previous.get("materials", {}).values(),
+        *previous.get("icons", {}).values(),
+    ]
+    map_paths = list(previous.get("maps", {}).values())
+    assets_current = previous.get("asset_fingerprint") == asset_fingerprint and bool(asset_paths) and all(
+        (VIEWER / path).is_file() for path in asset_paths
+    )
+    maps_current = previous.get("map_fingerprint") == map_fingerprint and all(
+        (VIEWER / path).is_file() for path in map_paths
+    )
+    if previous.get("version", 0) >= 12 and assets_current and maps_current:
+        print(f"local Studio assets are current: {manifest_path}")
+        return 0
+
+    manifest = {
+        "version": 12,
+        "game": str(args.game),
+        "asset_fingerprint": asset_fingerprint,
+        "map_fingerprint": map_fingerprint,
+        "models": {}, "sounds": {}, "animations": {}, "particles": {}, "materials": {}, "icons": {}, "maps": {},
+        "resources": {"models": MODELS, "sounds": SOUNDS, "animations": VIEWMODEL_ANIMATIONS,
+                      "particles": PARTICLE_TEXTURES, "materials": MATERIAL_TEXTURES, "icons": HUD_ICONS},
+    }
+
+    if assets_current:
+        for category in ("models", "sounds", "animations", "particles", "materials", "icons"):
+            manifest[category] = previous[category]
+    else:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            models = {key: pool.submit(export_model, args.vrf, args.game, key, resource)
+                      for key, resource in MODELS.items()}
+            sounds = {key: pool.submit(export_sounds, args.vrf, args.game, key, resources)
+                      for key, resources in SOUNDS.items()}
+            animations = {key: {action: pool.submit(export_viewmodel_animation, args.vrf, args.game, key, action, resource)
+                                for action, resource in actions.items()}
+                          for key, actions in VIEWMODEL_ANIMATIONS.items()}
+            particles = {key: pool.submit(export_particle_texture, args.vrf, args.game, key, resource)
+                         for key, resource in PARTICLE_TEXTURES.items()}
+            materials = {key: pool.submit(export_material_texture, args.vrf, args.game, key, resource)
+                         for key, resource in MATERIAL_TEXTURES.items()}
+            icons = {key: pool.submit(export_hud_icon, args.vrf, args.game, key, resource)
+                     for key, resource in HUD_ICONS.items()}
+            manifest["models"] = {key: job.result() for key, job in models.items()}
+            manifest["sounds"] = {key: job.result() for key, job in sounds.items()}
+            manifest["animations"] = {
+                key: {action: job.result() for action, job in actions.items()}
+                for key, actions in animations.items()
+            }
+            manifest["particles"] = {key: job.result() for key, job in particles.items()}
+            manifest["materials"] = {key: job.result() for key, job in materials.items()}
+            manifest["icons"] = {key: job.result() for key, job in icons.items()}
+
+    manifest["maps"] = previous.get("maps", {}) if maps_current else export_nav_graphs(args.vrf, args.game)
 
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {manifest_path}")

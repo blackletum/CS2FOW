@@ -6,6 +6,8 @@ let cachedPackets = null;
 let simulation = null;
 let simulationTimer = null;
 let simulationPaused = true;
+let unitsPerMeter = 1;
+const MAX_RENDER_TRIANGLES = 300000;
 
 function stop_simulation()
 {
@@ -25,7 +27,11 @@ function publish_simulation()
 		for (const visibility of state.visibilities)
 		{
 			transfer.push(visibility.origins.buffer, visibility.targets.buffer, visibility.blocked.buffer);
-			if (visibility.traversal) transfer.push(visibility.traversal.triangles.buffer);
+			if (visibility.traversal)
+			{
+				visibility.traversal.positions = map.triangle_positions_for(visibility.traversal.triangles, unitsPerMeter);
+				transfer.push(visibility.traversal.triangles.buffer, visibility.traversal.positions.buffer);
+			}
 		}
 		for (const event of state.events)
 		{
@@ -47,11 +53,14 @@ self.addEventListener("message", (event) =>
 	{
 		if (message.type === "load")
 		{
+			stop_simulation();
 			const loaded = new Bvh8Map(message.buffer);
-			const positions = loaded.triangle_positions(message.unitsPerMeter);
+			unitsPerMeter = message.unitsPerMeter;
+			const positions = loaded.triangle_positions(unitsPerMeter, MAX_RENDER_TRIANGLES);
 			map = loaded;
 			cachedPackets = null;
-			self.postMessage({type: "loaded", id: message.id, metadata: map.metadata, positions}, [positions.buffer]);
+			self.postMessage({type: "loaded", id: message.id,
+				metadata: {...map.metadata, renderedTriangleCount: positions.length / 9}, positions}, [positions.buffer]);
 		}
 		else if (message.type === "load-surfaces" && map)
 		{
@@ -74,6 +83,12 @@ self.addEventListener("message", (event) =>
 					clearCount: result.clearCount, visible: result.visible}))
 			}, transfer);
 		}
+		else if (message.type === "pick" && map)
+		{
+			const hit = map.segment_hit(message.origin, message.target);
+			self.postMessage({type: "picked", id: message.id, mode: message.mode,
+				mapId: message.mapId, point: hit?.point || null});
+		}
 		else if (message.type === "clear")
 		{
 			stop_simulation();
@@ -84,7 +99,7 @@ self.addEventListener("message", (event) =>
 		{
 			stop_simulation();
 			simulation = new FpsSimulation(map, message.settings);
-			simulationPaused = false;
+			simulationPaused = Boolean(message.paused);
 			simulationTimer = setInterval(publish_simulation, 1000 / FPS_TICK_RATE);
 			self.postMessage({type: "play-started"});
 		}
@@ -106,7 +121,7 @@ self.addEventListener("message", (event) =>
 		}
 		else if (message.type === "play-targets" && simulation)
 		{
-			simulation.set_targets(message.targets);
+			simulation.set_targets(message.targetSets || message.targets);
 		}
 		else if (message.type === "play-debug" && simulation)
 		{

@@ -600,6 +600,7 @@
 		.play-card .label { color: rgba(255, 255, 255, 0.58); font-size: 10px; font-weight: 850; letter-spacing: 0.14em; text-transform: uppercase; }
 		.play-gate-line { margin-top: 3px; color: #fff; font-size: 16px; }
 		.play-card .play-result { color: #ff7b86; font-weight: 850; }
+		.play-card .play-result.partial { color: #ffd166; }
 		.play-card .play-result.visible { color: #70e6a8; }
 		.play-gate-meta { margin-top: 3px; color: rgba(255, 255, 255, 0.72); font-size: 13px; }
 		.play-bvh { margin-top: 5px; color: rgba(255, 255, 255, 0.62); font-size: 12px; line-height: 1.4; }
@@ -923,6 +924,16 @@
 				<div class="section-block">
 					<h2>Runtime origins</h2>
 					<label class="field"><span>Viewer ping <output id="viewer-ping-value">0 ms / 48 units</output></span><input id="viewer-ping" type="range" min="0" max="200" step="1" value="0"></label>
+					<div class="grid-3">
+						<label class="field"><span>Shoulder base</span><input id="shoulder-base" type="number" min="0" max="256" step="1" value="48"></label>
+						<label class="field"><span>RTT scale</span><input id="shoulder-rtt-scale" type="number" min="0" max="4" step="0.1" value="0.4"></label>
+						<label class="field"><span>Shoulder max</span><input id="shoulder-max" type="number" min="0" max="256" step="1" value="128"></label>
+					</div>
+					<div class="grid-3">
+						<label class="field"><span>HE radius</span><input id="he-clear-radius" type="number" min="0" max="320" step="1" value="100"></label>
+						<label class="field"><span>HE seconds</span><input id="he-clear-seconds" type="number" min="0" max="10" step="0.1" value="2.5"></label>
+						<label class="field"><span>Bot seed</span><input id="simulation-seed" type="number" step="1" value="1337"></label>
+					</div>
 					<div class="input-buttons" role="group" aria-label="Viewer movement input">
 						<button class="button" type="button" data-movement-button="w" aria-pressed="false">W</button>
 						<button class="button" type="button" data-movement-button="a" aria-pressed="false">A</button>
@@ -971,8 +982,8 @@
 	<div id="play-hud" class="play-hud" hidden aria-live="polite">
 		<div class="crosshair" aria-hidden="true"></div>
 		<div class="play-card">
-			<div class="label">Visibility gate · <span id="play-bot-count">1/1 bots visible</span></div>
-			<div class="play-gate-line">Bot <span id="play-result" class="play-result visible">Visible</span> · <span id="play-rays">0/0</span> clear/blocked rays · <span id="play-blocker">clear</span></div>
+			<div class="label">Visibility gate · <span id="play-bot-count">0/3 bots visible</span></div>
+			<div class="play-gate-line">Bots <span id="play-result" class="play-result">0/3 visible</span> · <span id="play-rays">0/0</span> aggregate clear/blocked rays · <span id="play-blocker">waiting</span></div>
 			<div class="play-gate-meta">Smoke <span id="play-smokes">0</span> · HE <span id="play-hes">0</span> · <span id="play-debug-state">Real</span> · <span id="play-view">First person</span></div>
 			<div id="play-bvh" class="play-bvh">BVH traversal appears in Debug mode.</div>
 		</div>
@@ -987,6 +998,9 @@
 		<div id="play-paused" class="play-paused">Click the map to resume</div>
 	</div>
 
-	<script type="module" src="./viewer.js?studio=43"></script>
+	<script type="importmap">
+		{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}
+	</script>
+	<script type="module" src="./viewer.js?studio=55"></script>
 </body>
 </html>

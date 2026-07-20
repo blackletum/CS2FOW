@@ -2,13 +2,13 @@
 // a weapon-muzzle preview. It also reads baked BVH8 maps in a worker and shows
 // the runtime wall decisions without changing plugin state.
 
-import * as THREE from "https://esm.sh/three@0.160.0";
-import {OrbitControls} from "https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js";
-import {TransformControls} from "https://esm.sh/three@0.160.0/examples/jsm/controls/TransformControls.js";
-import {GLTFLoader} from "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
-import {clone as clone_skeleton} from "https://esm.sh/three@0.160.0/examples/jsm/utils/SkeletonUtils.js";
+import * as THREE from "three";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {TransformControls} from "three/addons/controls/TransformControls.js";
+import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
+import {clone as clone_skeleton} from "three/addons/utils/SkeletonUtils.js";
 import {shoulder_offset} from "./bvh8.js";
-import {default_targets} from "./fps_runtime.js";
+import {default_targets, FPS_CONSTANTS, FPS_DT, target_muzzle, weapon_muzzle_length} from "./fps_runtime.js";
 
 const k_source_units_per_meter = 39.3700787;
 const k_default_preset = "default_sas_visibility_points.json";
@@ -32,11 +32,10 @@ const k_body_dot_radius = 0.06 / 3.0;
 const k_selected_dot_radius = 0.088 / 3.0;
 const k_muzzle_dot_radius = 0.038 / 3.0;
 const k_animation_transition_seconds = 0.22;
-const k_debug_draw_interval = 1 / 15;
-const k_bvh_snapshot_interval = 0.2;
+const k_debug_draw_interval = 1 / 16;
+const k_bvh_snapshot_interval = 1 / 16;
 const k_mouse_yaw = 0.022;
 const k_viewmodel_fov = 44;
-const k_he_clear_radius = 100;
 const k_world_fov = 58;
 const k_viewmodel_offset = Object.freeze({x: 2.5, y: 2, z: -1});
 // Fire rate, magazine size, and movement speed follow the current CS2 weapon
@@ -75,6 +74,11 @@ const k_skeleton_edges = [
 	[0, 1], [1, 2], [2, 14], [14, 3],
 	[1, 4], [4, 13], [1, 5], [5, 12],
 	[3, 6], [6, 8], [8, 10], [3, 7], [7, 9], [9, 11]
+];
+const k_aabb_edges = [
+	[0, 1], [0, 2], [1, 3], [2, 3],
+	[4, 5], [4, 6], [5, 7], [6, 7],
+	[0, 4], [1, 5], [2, 6], [3, 7]
 ];
 const k_map_spawn_pairs = {
 	de_ancient: {
@@ -173,6 +177,11 @@ const read_number = (id) =>
 	const value = Number($(id).value);
 	return Number.isFinite(value) ? value : 0;
 };
+const runtime_tuning = () => ({
+	shoulderBase: read_number("shoulder-base"),
+	shoulderRttScale: read_number("shoulder-rtt-scale"),
+	maxShoulder: read_number("shoulder-max")
+});
 const clone_point = (point) => ({name: point.name, x: Number(point.x), y: Number(point.y), z: Number(point.z)});
 const can_delete_point = (count) => count > 1;
 
@@ -220,6 +229,7 @@ let transform;
 let loader;
 let model;
 let viewer_model;
+let model_load_id = 0;
 let model_mixer;
 let viewer_mixer;
 let model_animations = [];
@@ -232,14 +242,18 @@ let manifest_models = {};
 let local_manifest = {};
 let weapon_model;
 let weapon_mount;
+let weapon_load_id = 0;
 let bot_weapon_model;
 let bot_weapon_mount;
 let bot_weapon_key = "";
+let bot_weapon_load_id = 0;
 const extra_bot_models = [];
 const extra_bot_mixers = [];
+const extra_bot_body_bindings = [];
 const extra_bot_debug_groups = [];
 let player_weapon_model;
 let player_weapon_mount;
+let player_weapon_load_id = 0;
 let viewmodel_root;
 let viewmodel_scene;
 let viewmodel_camera;
@@ -283,6 +297,7 @@ let map_report;
 let map_wireframe = false;
 let map_focus = true;
 let map_load_id = 0;
+let placement_pick_id = 0;
 let trace_id = 0;
 let trace_in_flight = false;
 let trace_dirty = false;
@@ -300,6 +315,7 @@ let last_play_debug_draw = -Infinity;
 let last_extra_debug_draw = -Infinity;
 let last_play_traversal_request = -Infinity;
 let debug_trace_smoothing = null;
+const extra_debug_smoothing = [];
 let play_third_person = false;
 let play_scoped = false;
 let play_state = null;
@@ -318,26 +334,31 @@ let play_action_serial = 0;
 let player_world_action_until = 0;
 const play_ammo = {usp_silencer: 12, m4a1_silencer: 20, awp: 5};
 let play_nav = null;
-let play_target_send_pending = false;
 let last_play_target_send = 0;
+let play_session_id = 0;
 let nav_group;
 let smoke_group;
 let grenade_group;
 let effect_group;
 const play_keys = {w: false, a: false, s: false, d: false, walk: false, crouch: false, jump: false};
+const play_scheduled = [];
 const smoke_visuals = [];
 const explosion_effects = [];
 const shot_effects = [];
 const impact_marks = [];
 const casing_effects = [];
 let viewmodel_motion_time = 0;
-const target_pose = {x: 0, y: 0, z: 0, yaw: 0, placed: false};
+const target_pose = {x: 0, y: 0, z: 0, yaw: 0, height: 72, placed: false};
 const extra_target_poses = [
-	{x: 0, y: 0, z: 0, yaw: 0, placed: false},
-	{x: 0, y: 0, z: 0, yaw: 0, placed: false}
+	{x: 0, y: 0, z: 0, yaw: 0, height: 72, placed: false},
+	{x: 0, y: 0, z: 0, yaw: 0, height: 72, placed: false}
 ];
+const extra_bot_render_poses = extra_target_poses.map((pose) => ({...pose}));
 const viewer_pose = {x: k_viewer_distance, y: 0, z: 0, yaw: 180, placed: false};
 const movement_buttons = {w: false, a: false, s: false, d: false};
+let play_pose_from = null;
+let play_pose_to = null;
+let play_pose_elapsed = 0;
 
 function reset_camera()
 {
@@ -349,6 +370,29 @@ function reset_camera()
 function degrees_to_radians(value)
 {
 	return value * Math.PI / 180.0;
+}
+
+function lerp_degrees(from, to, amount)
+{
+	const delta = ((to - from + 540) % 360) - 180;
+	return from + delta * amount;
+}
+
+function actor_pose(actor)
+{
+	return {x: actor.origin.x, y: actor.origin.y, z: actor.origin.z, yaw: actor.yaw,
+		height: actor.crouched ? FPS_CONSTANTS.crouchedHeight : 72, placed: true};
+}
+
+function interpolate_pose(destination, from, to, amount, interpolateYaw = true)
+{
+	destination.x = THREE.MathUtils.lerp(from.x, to.x, amount);
+	destination.y = THREE.MathUtils.lerp(from.y, to.y, amount);
+	destination.z = THREE.MathUtils.lerp(from.z, to.z, amount);
+	if (interpolateYaw) destination.yaw = lerp_degrees(from.yaw, to.yaw, amount);
+	if (Number.isFinite(from.height) && Number.isFinite(to.height))
+		destination.height = THREE.MathUtils.lerp(from.height, to.height, amount);
+	destination.placed = true;
 }
 
 function point_vec(point)
@@ -417,10 +461,10 @@ function generated_aabb_points()
 
 function target_aabb_points()
 {
-	return generated_aabb_points().map((point) => ({
+	return generated_aabb_points().map((point, index) => ({
 		x: point.x + target_pose.x,
 		y: point.y + target_pose.y,
-		z: point.z + target_pose.z
+		z: (play_active && index >= 4 ? target_pose.height + k_top_bounds_padding : point.z) + target_pose.z
 	}));
 }
 
@@ -436,6 +480,7 @@ function apply_player_transforms()
 		viewer_model.position.copy(source_to_three(pose_origin(viewer_pose)));
 		viewer_model.rotation.set(0, degrees_to_radians(viewer_pose.yaw), 0);
 	}
+	if (play_active) return;
 	const targetVisible = !map_metadata || target_pose.placed;
 	const viewerVisible = should_show_viewer_model(Boolean(map_metadata), viewer_pose.placed, play_active, play_third_person);
 	if (model) model.visible = targetVisible;
@@ -486,7 +531,8 @@ function stationary_viewer_origins()
 
 function runtime_animation_active()
 {
-	return runtime_animation_enabled && runtime_body_bindings.length === k_runtime_body_bones.length;
+	return runtime_animation_enabled && points.length === k_runtime_body_bones.length
+		&& runtime_body_bindings.length === points.length;
 }
 
 function runtime_body_positions()
@@ -499,7 +545,7 @@ function runtime_body_positions()
 	return points.map((point, index) =>
 	{
 		const binding = runtime_body_bindings[index];
-		return binding ? binding.bone.localToWorld(binding.offset.clone()) : source_to_three(point_vec(point));
+		return binding ? binding.bone.localToWorld(binding.offset.clone()) : source_to_three(target_world_point(point_vec(point)));
 	});
 }
 
@@ -516,13 +562,22 @@ function muzzle_position()
 	return selectedModel.localToWorld(source_to_three(offset).clone());
 }
 
+function runtime_muzzle_position()
+{
+	const key = play_active ? $("bot-weapon-select").value : active_weapon_key;
+	const muzzle = target_muzzle({origin: pose_origin(target_pose), yaw: target_pose.yaw,
+		height: play_active ? target_pose.height : 72,
+		crouched: Boolean(play_active && play_state?.bot?.crouched)}, weapon_muzzle_length(key));
+	return muzzle ? source_to_three(muzzle) : null;
+}
+
 function runtime_targets()
 {
 	const targets = [
 		...target_aabb_points().map(source_to_three),
 		...runtime_body_positions()
 	];
-	const muzzle = muzzle_position();
+	const muzzle = runtime_muzzle_position();
 	if (muzzle)
 	{
 		targets.push(muzzle);
@@ -595,6 +650,28 @@ function runtime_target_values()
 	return values;
 }
 
+function extra_runtime_target_values(index)
+{
+	const pose = play_active ? extra_bot_render_poses[index] : extra_target_poses[index];
+	const actor = play_state?.bots?.[index + 1];
+	const values = default_targets({origin: pose, yaw: pose.yaw, height: pose.height,
+		crouched: Boolean(actor?.crouched)}, weapon_muzzle_length($("bot-weapon-select").value));
+	const bindings = extra_bot_body_bindings[index];
+	const bot = extra_bot_models[index];
+	if (!bot || bindings?.length !== k_runtime_body_bones.length) return values;
+	bot.updateWorldMatrix(true, true);
+	for (let point = 0; point < bindings.length; ++point)
+	{
+		const binding = bindings[point];
+		binding.bone.localToWorld(binding.position.copy(binding.offset));
+		const offset = (point + 8) * 3;
+		values[offset] = binding.position.z * k_source_units_per_meter;
+		values[offset + 1] = binding.position.x * k_source_units_per_meter;
+		values[offset + 2] = binding.position.y * k_source_units_per_meter;
+	}
+	return values;
+}
+
 function request_map_trace()
 {
 	if (!map_simulation_ready())
@@ -608,7 +685,9 @@ function request_map_trace()
 	}
 	trace_dirty = false;
 	trace_in_flight = true;
-	const targetSets = [runtime_target_values(), ...extra_target_poses.filter((pose) => pose.placed).map((pose) => default_targets({origin: pose}))];
+	const targetSets = [runtime_target_values(), ...extra_target_poses
+		.map((pose, index) => pose.placed ? extra_runtime_target_values(index) : null).filter(Boolean)];
+	const tuning = runtime_tuning();
 	map_worker.postMessage({
 		type: "trace",
 		id: ++trace_id,
@@ -616,6 +695,7 @@ function request_map_trace()
 			origin: pose_origin(viewer_pose),
 			yaw: viewer_pose.yaw,
 			pingMs: read_number("viewer-ping"),
+			tuning,
 			buttons: {...movement_buttons}
 		},
 		targetSets
@@ -685,6 +765,10 @@ function draw_map_trace(origins, targets, blocked, visible, clearCount)
 
 function draw_extra_bot_debug(results)
 {
+	const previousPositions = extra_bot_debug_groups.map((group) => Object.fromEntries(group.children
+		.filter((child) => child.name && child.geometry?.getAttribute("position"))
+		.map((child) => [child.name, child.geometry.getAttribute("position").array.slice()])));
+	extra_debug_smoothing.length = 0;
 	for (let index = 0; index < extra_bot_debug_groups.length; ++index)
 	{
 		const group = extra_bot_debug_groups[index];
@@ -712,22 +796,67 @@ function draw_extra_bot_debug(results)
 		const rays = new THREE.LineSegments(rayGeometry, new THREE.LineBasicMaterial({vertexColors: true, transparent: true, opacity: 0.46, depthTest: false}));
 		rays.name = "debug-rays";
 		rays.visible = !play_active || play_rays_enabled;
+		rays.renderOrder = 4;
+		queue_extra_debug_interpolation(rays, rayPositions, previousPositions[index][rays.name]);
 		group.add(rays);
-		for (const [values, color] of [[targets.slice(0, 8), k_aabb_color], [targets.slice(8), k_body_color]])
+		for (const [name, values, color] of [["debug-aabb-points", targets.slice(0, 8), k_aabb_color],
+			["debug-body-points", targets.slice(8), k_body_color]])
 		{
-			const geometry = new THREE.BufferGeometry().setFromPoints(values);
-			group.add(new THREE.Points(geometry, new THREE.PointsMaterial({color, size: 0.11, sizeAttenuation: true, depthTest: false})));
+			const positions = three_position_array(values);
+			const geometry = new THREE.BufferGeometry();
+			geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+			const markers = new THREE.Points(geometry, new THREE.PointsMaterial({
+				color, size: 0.11, sizeAttenuation: true, transparent: true,
+				opacity: read_number("point-opacity"), depthTest: false
+			}));
+			markers.name = name;
+			markers.renderOrder = 10;
+			queue_extra_debug_interpolation(markers, positions, previousPositions[index][name]);
+			group.add(markers);
 		}
 		if (targets.length >= 23)
 		{
-			const box = new THREE.Box3().setFromPoints(targets.slice(0, 8));
-			group.add(new THREE.Box3Helper(box, k_aabb_color));
+			const boxVertices = [];
+			for (const [from, to] of k_aabb_edges) boxVertices.push(targets[from], targets[to]);
+			const boxPositions = three_position_array(boxVertices);
+			const boxGeometry = new THREE.BufferGeometry();
+			boxGeometry.setAttribute("position", new THREE.BufferAttribute(boxPositions, 3));
+			const boxLines = new THREE.LineSegments(boxGeometry,
+				new THREE.LineBasicMaterial({color: k_aabb_color, transparent: true, opacity: 0.75}));
+			boxLines.name = "debug-box";
+			boxLines.renderOrder = 8;
+			queue_extra_debug_interpolation(boxLines, boxPositions, previousPositions[index][boxLines.name]);
+			group.add(boxLines);
 			const skeleton = [];
 			for (const [from, to] of k_skeleton_edges) skeleton.push(targets[8 + from], targets[8 + to]);
-			group.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(skeleton), new THREE.LineBasicMaterial({color: k_body_color, depthTest: false})));
+			const skeletonPositions = three_position_array(skeleton);
+			const skeletonGeometry = new THREE.BufferGeometry();
+			skeletonGeometry.setAttribute("position", new THREE.BufferAttribute(skeletonPositions, 3));
+			const skeletonLines = new THREE.LineSegments(skeletonGeometry,
+				new THREE.LineBasicMaterial({color: k_body_color, transparent: true,
+					opacity: read_number("point-opacity") * 0.9, depthTest: false}));
+			skeletonLines.name = "debug-skeleton";
+			skeletonLines.renderOrder = 9;
+			queue_extra_debug_interpolation(skeletonLines, skeletonPositions, previousPositions[index][skeletonLines.name]);
+			group.add(skeletonLines);
 		}
 		group.visible = !play_active || play_debug;
 	}
+}
+
+function three_position_array(points)
+{
+	const positions = new Float32Array(points.length * 3);
+	for (let index = 0; index < points.length; ++index) positions.set(points[index].toArray(), index * 3);
+	return positions;
+}
+
+function queue_extra_debug_interpolation(object, target, previous)
+{
+	if (!previous || previous.length !== target.length) return;
+	const destination = target.slice();
+	object.geometry.getAttribute("position").array.set(previous);
+	extra_debug_smoothing.push({object, from: previous, to: destination, elapsed: 0});
 }
 
 function update_debug_trace_smoothing(delta)
@@ -748,6 +877,26 @@ function update_debug_trace_smoothing(delta)
 			debug_trace_smoothing.fromOrigins[index], debug_trace_smoothing.toOrigins[index], amount);
 	}
 	if (amount >= 1) debug_trace_smoothing = null;
+}
+
+function update_extra_debug_smoothing(delta)
+{
+	for (let item = extra_debug_smoothing.length - 1; item >= 0; --item)
+	{
+		const smoothing = extra_debug_smoothing[item];
+		if (!smoothing.object.parent)
+		{
+			extra_debug_smoothing.splice(item, 1);
+			continue;
+		}
+		smoothing.elapsed += delta;
+		const amount = Math.min(1, smoothing.elapsed / k_debug_draw_interval);
+		const positions = smoothing.object.geometry.getAttribute("position");
+		for (let index = 0; index < positions.array.length; ++index)
+			positions.array[index] = THREE.MathUtils.lerp(smoothing.from[index], smoothing.to[index], amount);
+		positions.needsUpdate = true;
+		if (amount >= 1) extra_debug_smoothing.splice(item, 1);
+	}
 }
 
 function remember_trace_result(origins, targets, visible, clearCount)
@@ -779,13 +928,8 @@ function make_position_marker(position, color, radius)
 
 function aabb_vertices(points)
 {
-	const edges = [
-		[0, 1], [0, 2], [1, 3], [2, 3],
-		[4, 5], [4, 6], [5, 7], [6, 7],
-		[0, 4], [1, 5], [2, 6], [3, 7]
-	];
 	const vertices = [];
-	for (const [a, b] of edges)
+	for (const [a, b] of k_aabb_edges)
 	{
 		vertices.push(source_to_three(points[a]), source_to_three(points[b]));
 	}
@@ -850,6 +994,23 @@ function clear_group(group)
 	}
 }
 
+function dispose_root(root, disposeGeometry = false, disposeMaterials = false, disposeTextures = false)
+{
+	root?.traverse((node) =>
+	{
+		if (disposeGeometry) node.geometry?.dispose?.();
+		if (!disposeMaterials || !node.material) return;
+		const materials = Array.isArray(node.material) ? node.material : [node.material];
+		for (const material of materials)
+		{
+			if (disposeTextures)
+				for (const value of Object.values(material))
+					if (value?.isTexture) value.dispose();
+			material.dispose?.();
+		}
+	});
+}
+
 function draw_muzzle_point()
 {
 	clear_group(muzzle_group);
@@ -907,7 +1068,7 @@ function draw_points()
 
 function update_animated_preview()
 {
-	if (!runtime_animation_active())
+	if (!runtime_animation_active() && !play_active)
 	{
 		return;
 	}
@@ -931,11 +1092,11 @@ function update_animated_preview()
 	if (play_active)
 	{
 		const now = performance.now();
-		if (now - last_play_target_send >= 30)
+		if (now - last_play_target_send >= FPS_DT * 1000)
 		{
 			last_play_target_send = now;
-			const targets = runtime_target_values();
-			map_worker.postMessage({type: "play-targets", targets}, [targets.buffer]);
+			const targetSets = [runtime_target_values(), ...extra_bot_models.map((_, index) => extra_runtime_target_values(index))];
+			map_worker.postMessage({type: "play-targets", targetSets}, targetSets.map((targets) => targets.buffer));
 		}
 	}
 	else if (map_metadata)
@@ -1000,21 +1161,29 @@ function render_point_editor()
 
 function update_status()
 {
+	const runtimeWeapon = play_active ? $("bot-weapon-select").value : active_weapon_key;
+	const hasRuntimeMuzzle = weapon_muzzle_length(runtimeWeapon) > 0;
+	const bindingsReady = points.length === k_runtime_body_bones.length && runtime_body_bindings.length === points.length;
 	$("status-body-count").textContent = points.length;
 	$("status-aabb-count").textContent = generated_aabb_points().length;
-	$("status-target-count").textContent = points.length + generated_aabb_points().length + Number(Boolean(play_active ? bot_weapon_model : weapon_model));
+	$("status-target-count").textContent = points.length + generated_aabb_points().length + Number(hasRuntimeMuzzle);
 	$("status-ray-count").textContent = ray_count;
 	$("status-origin-count").textContent = origin_group?.children.length || (map_metadata ? 0 : stationary_viewer_origins().length);
 	$("status-ray-result").textContent = map_metadata ? `${clear_ray_count}/${blocked_ray_count}` : "--";
 	$("status-wall-result").textContent = wall_visible === null ? (map_metadata ? "Place players" : "No map") : (wall_visible ? "Visible" : "Hidden");
 	$("status-wall-result").style.color = wall_visible === null ? "" : (wall_visible ? "#13784a" : "#b90f20");
-	$("status-muzzle").textContent = (play_active ? bot_weapon_model : weapon_model) ? (play_active ? bot_weapon_key : active_weapon_key) : "None";
+	$("status-muzzle").textContent = hasRuntimeMuzzle ? runtimeWeapon : "None";
 	$("status-selected").textContent = points[selected_index]?.name ?? "None";
 	$("status").textContent = status_extra || (model ? "Studio ready." : "Load a local SAS model to begin.");
 	$("model-status").textContent = model_status;
 	$("model-status").classList.toggle("ready", Boolean(model));
-	$("animation-clip").disabled = runtime_body_bindings.length === 0;
-	$("runtime-animation").disabled = runtime_body_bindings.length === 0;
+	$("animation-clip").disabled = !bindingsReady;
+	$("runtime-animation").disabled = !bindingsReady;
+	for (const id of ["viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max",
+		"he-clear-radius", "he-clear-seconds", "simulation-seed", "bot-weapon-select"])
+	{
+		$(id).disabled = play_active;
+	}
 	$("play-mode").disabled = !play_ready();
 	$("runtime-animation").setAttribute("aria-pressed", String(runtime_animation_enabled && !play_active));
 	$("edit-mode").setAttribute("aria-pressed", String(!runtime_animation_enabled && !play_active));
@@ -1170,6 +1339,7 @@ function clear_map_traversal()
 {
 	if (!map_traversal_mesh) return;
 	scene.remove(map_traversal_mesh);
+	for (const child of map_traversal_mesh.children) child.material?.dispose?.();
 	map_traversal_mesh.geometry.dispose();
 	map_traversal_mesh.material.dispose();
 	map_traversal_mesh = null;
@@ -1181,8 +1351,16 @@ function merge_bot_traversals(visibilities)
 	if (!values.length) return null;
 	const triangles = new Set();
 	for (const value of values) for (const triangle of value.triangles) triangles.add(triangle);
+	const positions = new Float32Array(values.reduce((count, value) => count + (value.positions?.length || 0), 0));
+	let positionOffset = 0;
+	for (const value of values)
+	{
+		if (!value.positions) continue;
+		positions.set(value.positions, positionOffset);
+		positionOffset += value.positions.length;
+	}
 	const total = (name) => values.reduce((sum, value) => sum + value[name], 0);
-	return {triangles: new Uint32Array([...triangles]), botCount: values.length,
+	return {triangles: new Uint32Array([...triangles]), positions, botCount: values.length,
 		visitedNodes: total("visitedNodes"), testedPackets: total("testedPackets"),
 		testedTriangles: total("testedTriangles"), boundsHits: total("boundsHits"),
 		boundsTests: total("boundsTests"), cacheHits: total("cacheHits"), cacheTests: total("cacheTests")};
@@ -1190,25 +1368,22 @@ function merge_bot_traversals(visibilities)
 
 function draw_map_traversal(value)
 {
-	if (!map_mesh || !map_metadata || !value?.triangles) return;
+	if (!map_mesh || !map_metadata || !value?.positions) return;
 	clear_map_traversal();
-	const source = map_mesh.geometry.getAttribute("position").array;
-	const indices = value.triangles;
-	const positions = new Float32Array(indices.length * 9);
-	let count = 0;
-	for (const triangle of indices)
-	{
-		if (triangle >= map_metadata.triangleCount) continue;
-		positions.set(source.subarray(triangle * 9, triangle * 9 + 9), count++ * 9);
-	}
 	const geometry = new THREE.BufferGeometry();
-	geometry.setAttribute("position", new THREE.BufferAttribute(count === indices.length ? positions : positions.slice(0, count * 9), 3));
+	geometry.setAttribute("position", new THREE.BufferAttribute(value.positions, 3));
 	const material = new THREE.MeshBasicMaterial({
-		color: 0xf0ad31, transparent: true, opacity: 0.94, depthWrite: false,
+		color: 0xf0ad31, transparent: true, opacity: 0.33, depthWrite: false,
 		side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2
 	});
 	map_traversal_mesh = new THREE.Mesh(geometry, material);
 	map_traversal_mesh.renderOrder = 2;
+	const outline = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+		color: 0x000000, wireframe: true, transparent: true, opacity: 0.16, depthWrite: false,
+		side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3
+	}));
+	outline.renderOrder = 3;
+	map_traversal_mesh.add(outline);
 	scene.add(map_traversal_mesh);
 	update_map_material();
 	const skipped = map_metadata.triangleCount ? 100 * (1 - value.testedTriangles / map_metadata.triangleCount) : 0;
@@ -1283,8 +1458,10 @@ function install_loaded_map(metadata, positions)
 	clear_map_mesh();
 	const geometry = new THREE.BufferGeometry();
 	geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-	geometry.computeBoundingBox();
-	geometry.computeBoundingSphere();
+	geometry.boundingBox = new THREE.Box3(
+		source_to_three({x: metadata.worldMin[0], y: metadata.worldMin[1], z: metadata.worldMin[2]}),
+		source_to_three({x: metadata.worldMax[0], y: metadata.worldMax[1], z: metadata.worldMax[2]}));
+	geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
 	const material = new THREE.MeshBasicMaterial({
 		color: k_map_color,
 		wireframe: map_wireframe,
@@ -1314,7 +1491,7 @@ function install_loaded_map(metadata, positions)
 	studio_grid.visible = false;
 	reset_wall_result();
 	set_map_summary(metadata.mapName,
-		`${metadata.triangleCount.toLocaleString()} triangles, ${metadata.nodeCount.toLocaleString()} nodes, ${(metadata.fileSize / 1048576).toFixed(1)} MB`);
+		`${metadata.triangleCount.toLocaleString()} collision triangles, ${metadata.renderedTriangleCount.toLocaleString()} rendered, ${metadata.nodeCount.toLocaleString()} nodes, ${(metadata.fileSize / 1048576).toFixed(1)} MB`);
 	status_extra = has_default_spawns
 		? `${metadata.mapName} loaded with a default spawn pair.`
 		: `${metadata.mapName} loaded. Click the map to place the target.`;
@@ -1375,6 +1552,11 @@ function init_map_worker()
 				request_map_trace();
 			}
 		}
+		else if (message.type === "picked" && message.id === placement_pick_id
+			&& message.mapId === map_load_id && message.mode === placement_mode && message.point)
+		{
+			place_map_actor(message.mode, message.point);
+		}
 		else if (message.type === "play-state")
 		{
 			handle_play_state(message.state);
@@ -1425,6 +1607,7 @@ function init_map_worker()
 
 function send_map_buffer(buffer, report = null)
 {
+	leave_play_mode();
 	map_report = report;
 	set_map_summary("Validating map", "Reading the BVH8 tree and rebuilding its collision wireframe...");
 	status_extra = "Validating BVH8 in the background...";
@@ -1434,6 +1617,7 @@ function send_map_buffer(buffer, report = null)
 
 async function load_mirage()
 {
+	leave_play_mode();
 	const id = ++map_load_id;
 	set_map_summary("Loading de_mirage", "Fetching the local 7.7 MB BVH8 bake...");
 	status_extra = "Loading local de_mirage BVH8...";
@@ -1472,6 +1656,7 @@ async function load_mirage()
 
 async function load_map_file(file)
 {
+	leave_play_mode();
 	const id = ++map_load_id;
 	try
 	{
@@ -1517,6 +1702,10 @@ function set_points(next_points)
 {
 	points = next_points.map(clone_point);
 	selected_index = 0;
+	if (!capture_runtime_body_bindings() && model)
+	{
+		runtime_animation_enabled = false;
+	}
 	update_scene();
 }
 
@@ -1535,10 +1724,12 @@ function make_mixer(gltf, root)
 function capture_runtime_body_bindings()
 {
 	runtime_body_bindings = [];
-	if (!model || default_points.length !== k_runtime_body_bones.length)
+	if (!model || points.length !== k_runtime_body_bones.length)
 	{
 		return false;
 	}
+	model.position.copy(source_to_three(pose_origin(target_pose)));
+	model.rotation.set(0, degrees_to_radians(target_pose.yaw), 0);
 	model.updateWorldMatrix(true, true);
 	for (let index = 0; index < k_runtime_body_bones.length; ++index)
 	{
@@ -1550,7 +1741,7 @@ function capture_runtime_body_bindings()
 		}
 		runtime_body_bindings.push({
 			bone,
-			offset: bone.worldToLocal(source_to_three(point_vec(default_points[index])).clone())
+			offset: bone.worldToLocal(source_to_three(target_world_point(point_vec(points[index]))).clone())
 		});
 	}
 	return true;
@@ -1655,6 +1846,33 @@ function update_play_input()
 	map_worker.postMessage({type: "play-input", buttons: {...play_keys}});
 }
 
+function clear_play_input()
+{
+	for (const key of Object.keys(play_keys)) play_keys[key] = false;
+	update_play_input();
+}
+
+function play_now()
+{
+	return play_state?.time || 0;
+}
+
+function schedule_play(delay, callback, serial = play_action_serial)
+{
+	play_scheduled.push({at: play_now() + delay, callback, serial});
+}
+
+function run_play_schedule(now)
+{
+	for (let index = play_scheduled.length - 1; index >= 0; --index)
+	{
+		const item = play_scheduled[index];
+		if (item.at > now) continue;
+		play_scheduled.splice(index, 1);
+		if (play_active && item.serial === play_action_serial) item.callback();
+	}
+}
+
 function set_root_opacity(root, opacity)
 {
 	root?.traverse((node) =>
@@ -1700,8 +1918,12 @@ function update_play_visibility()
 		if (rays) rays.visible = play_rays_enabled;
 	}
 	if (ray_group) ray_group.visible = play_debug && play_rays_enabled;
-	$("play-result").classList.toggle("visible", wall_visible !== false);
-	$("play-result").textContent = wall_visible === false ? "Hidden" : "Visible";
+	const visibilities = play_state?.visibilities || (play_state?.visibility ? [play_state.visibility] : []);
+	const visibleBots = visibilities.filter((visibility) => visibility.visible).length;
+	const totalBots = visibilities.length || 3;
+	$("play-result").classList.toggle("partial", visibleBots > 0 && visibleBots < totalBots);
+	$("play-result").classList.toggle("visible", visibleBots === totalBots);
+	$("play-result").textContent = `${visibleBots}/${totalBots} visible`;
 	$("play-debug-state").textContent = play_debug ? `Debug · Rays ${play_rays_enabled ? "on" : "off"}` : "Real";
 	$("play-view").textContent = play_third_person ? "Third person" : "First person";
 }
@@ -1709,7 +1931,7 @@ function update_play_visibility()
 function update_map_material()
 {
 	if (!map_mesh) return;
-	const {opacity, transparent} = map_material_state(read_number("map-opacity"), play_debug && Boolean(map_traversal_mesh));
+	const {opacity, transparent} = map_material_state(read_number("map-opacity"));
 	if (map_mesh.material.transparent !== transparent || map_mesh.material.depthWrite === transparent)
 	{
 		map_mesh.material.transparent = transparent;
@@ -1744,9 +1966,8 @@ function update_map_focus()
 	if (uniforms) uniforms.center.value.copy(source_to_three(pose_origin(viewer_pose)));
 }
 
-function map_material_state(opacity, traversal = false)
+function map_material_state(opacity)
 {
-	if (traversal) opacity = Math.min(opacity, 0.05);
 	return {opacity, transparent: opacity < 1 || map_focus};
 }
 
@@ -1918,6 +2139,8 @@ function source_point_segment_distance(point, start, end)
 function update_smoke_visuals()
 {
 	if (!play_state) return;
+	const heRadius = Math.min(320, Math.max(0, read_number("he-clear-radius")));
+	const heSeconds = Math.min(10, Math.max(0, read_number("he-clear-seconds")));
 	for (let index = smoke_visuals.length - 1; index >= 0; --index)
 	{
 		const visual = smoke_visuals[index];
@@ -1944,10 +2167,10 @@ function update_smoke_visuals()
 			}
 		}
 		const clearances = (play_state.clearances || []).filter((clearance) =>
-			clearance.time >= visual.startTime && play_state.time - clearance.time < 2.5);
+			clearance.time >= visual.startTime && play_state.time - clearance.time < heSeconds);
 		const cuts = (play_state.smokeCuts || []).filter((cut) =>
 			cut.time >= visual.startTime && play_state.time - cut.time < 0.8);
-		const stateKey = `${Math.floor(grow * 32)}|${clearances.map((clearance) => `${clearance.time}:${clearance.center.x}:${clearance.center.y}:${clearance.center.z}`).join("|")}|${cuts.map((cut) => cut.time).join("|")}`;
+		const stateKey = `${Math.floor(grow * 32)}|${heRadius}|${heSeconds}|${clearances.map((clearance) => `${clearance.time}:${clearance.center.x}:${clearance.center.y}:${clearance.center.z}`).join("|")}|${cuts.map((cut) => cut.time).join("|")}`;
 		if (stateKey !== visual.stateKey)
 		{
 			for (let layer = 0; layer < visual.layers.length; ++layer)
@@ -1958,8 +2181,8 @@ function update_smoke_visuals()
 				{
 					const point = current.cells[cell];
 					const grown = Math.hypot(point.x - visual.center.x, point.y - visual.center.y, point.z - visual.center.z) <= 24 + grow * 145;
-					const cleared = clearances.some((clearance) =>
-						Math.hypot(point.x - clearance.center.x, point.y - clearance.center.y, point.z - clearance.center.z) <= k_he_clear_radius)
+					const cleared = heRadius > 0 && clearances.some((clearance) =>
+						Math.hypot(point.x - clearance.center.x, point.y - clearance.center.y, point.z - clearance.center.z) <= heRadius)
 						|| cuts.some((cut) => source_point_segment_distance(point, cut.start, cut.end) <= 28);
 					const offset = cell * 3;
 					const shown = {
@@ -2196,6 +2419,7 @@ function draw_grenades(grenades)
 	{
 		active.add(grenade.id);
 		let mesh = grenade_visuals.get(grenade.id);
+		let created = false;
 		if (!mesh)
 		{
 			const template = grenade_templates[grenade.kind];
@@ -2216,9 +2440,11 @@ function draw_grenades(grenades)
 			}
 			grenade_group.add(mesh);
 			grenade_visuals.set(grenade.id, mesh);
+			created = true;
 		}
-		mesh.position.copy(source_to_three(grenade.origin));
-		mesh.rotation.x = play_state?.time * 9 || 0;
+		const destination = source_to_three(grenade.origin);
+		if (created) mesh.position.copy(destination);
+		else mesh.userData.positionInterpolation = {from: mesh.position.clone(), to: destination, elapsed: 0};
 	}
 	for (const [id, mesh] of grenade_visuals)
 	{
@@ -2231,6 +2457,22 @@ function draw_grenades(grenades)
 			else node.material?.dispose?.();
 		});
 		grenade_visuals.delete(id);
+	}
+}
+
+function update_grenade_interpolation(delta)
+{
+	for (const mesh of grenade_visuals.values())
+	{
+		const interpolation = mesh.userData.positionInterpolation;
+		if (interpolation)
+		{
+			interpolation.elapsed += delta;
+			const amount = Math.min(1, interpolation.elapsed / FPS_DT);
+			mesh.position.lerpVectors(interpolation.from, interpolation.to, amount);
+			if (amount >= 1) delete mesh.userData.positionInterpolation;
+		}
+		mesh.rotation.x += delta * 9;
 	}
 }
 
@@ -2307,7 +2549,7 @@ function choose_player_animation(actor)
 	if (!choice) return;
 	const clip = THREE.AnimationClip.findByName(viewer_animations, choice.clip);
 	if (!clip) return;
-	if (performance.now() / 1000 < player_world_action_until)
+	if (play_now() < player_world_action_until)
 	{
 		const name = `${choice.clip}:lower`;
 		if (viewer_mixer.cs2fow_play_name !== name) set_player_base_clip(masked_world_clip(clip, false), name);
@@ -2325,10 +2567,47 @@ function choose_player_animation(actor)
 	}
 }
 
+function queue_play_pose_interpolation(state)
+{
+	const bots = state.bots?.length ? state.bots : [state.bot];
+	play_pose_from = [{...viewer_pose}, {...target_pose}, ...extra_bot_render_poses.map((pose) => ({...pose}))];
+	play_pose_to = [actor_pose(state.player), actor_pose(state.bot), ...bots.slice(1).map(actor_pose)];
+	play_pose_elapsed = 0;
+}
+
+function update_play_pose_interpolation(delta)
+{
+	if (!play_pose_from || !play_pose_to) return;
+	play_pose_elapsed += delta;
+	const amount = Math.min(1, play_pose_elapsed / FPS_DT);
+	// Mouse look stays immediate; only the local player's networked position is delayed by one tick.
+	interpolate_pose(viewer_pose, play_pose_from[0], play_pose_to[0], amount, false);
+	interpolate_pose(target_pose, play_pose_from[1], play_pose_to[1], amount);
+	for (let index = 0; index < extra_bot_render_poses.length; ++index)
+	{
+		if (!play_pose_from[index + 2] || !play_pose_to[index + 2]) continue;
+		const pose = extra_bot_render_poses[index];
+		interpolate_pose(pose, play_pose_from[index + 2], play_pose_to[index + 2], amount);
+		const bot = extra_bot_models[index];
+		if (!bot) continue;
+		bot.position.copy(source_to_three(pose));
+		bot.rotation.set(0, degrees_to_radians(pose.yaw), 0);
+	}
+	apply_player_transforms();
+	const routePositions = nav_group?.children[0]?.geometry?.getAttribute("position");
+	if (routePositions?.count)
+	{
+		routePositions.array.set(source_to_three(target_pose).toArray(), 0);
+		routePositions.needsUpdate = true;
+	}
+}
+
 function handle_play_state(state)
 {
 	if (!play_active) return;
 	play_state = state;
+	queue_play_pose_interpolation(state);
+	run_play_schedule(state.time);
 	const traversal = play_debug ? merge_bot_traversals(state.visibilities || [state.visibility]) : null;
 	if (traversal) draw_map_traversal(traversal);
 	const now = performance.now() / 1000;
@@ -2337,19 +2616,12 @@ function handle_play_state(state)
 		last_play_traversal_request = now;
 		map_worker.postMessage({type: "play-traversal"});
 	}
-	Object.assign(viewer_pose, state.player.origin, {yaw: state.player.yaw, placed: true});
-	Object.assign(target_pose, state.bot.origin, {yaw: state.bot.yaw, placed: true});
 	for (let index = 0; index < extra_bot_models.length; ++index)
 	{
 		const actor = state.bots?.[index + 1];
-		if (!actor) continue;
-		extra_bot_models[index].position.copy(source_to_three(actor.origin));
-		extra_bot_models[index].rotation.set(0, degrees_to_radians(actor.yaw), 0);
-		choose_bot_animation(actor, extra_bot_mixers[index]);
+		if (actor) choose_bot_animation(actor, extra_bot_mixers[index]);
 	}
-	play_pitch = state.player.pitch;
 	play_eye_height_target = state.player.crouched ? 28.5 : 64;
-	apply_player_transforms();
 	choose_bot_animation(state.bot);
 	choose_player_animation(state.player);
 	const drawDebug = play_debug && state.time - last_play_debug_draw >= k_debug_draw_interval;
@@ -2403,14 +2675,18 @@ function handle_play_state(state)
 	{
 		draw_play_route(state.route);
 	}
-	update_play_camera();
 	update_smoke_visuals();
-	$("play-rays").textContent = `${state.visibility.clearCount}/${state.visibility.blocked.length - state.visibility.clearCount}`;
-	const blockers = new Set(state.visibility.blocked);
-	$("play-blocker").textContent = state.visibility.visible ? "clear" : blockers.has(1) && blockers.has(2) ? "wall + smoke" : blockers.has(2) ? "smoke" : "wall";
+	const visibilities = state.visibilities || [state.visibility];
+	const totalRays = visibilities.reduce((total, visibility) => total + visibility.blocked.length, 0);
+	const clearRays = visibilities.reduce((total, visibility) => total + visibility.clearCount, 0);
+	$("play-rays").textContent = `${clearRays}/${totalRays - clearRays}`;
+	const blockers = new Set(visibilities.filter((visibility) => !visibility.visible)
+		.flatMap((visibility) => [...visibility.blocked]));
+	$("play-blocker").textContent = visibilities.every((visibility) => visibility.visible) ? "clear"
+		: blockers.has(1) && blockers.has(2) ? "wall + smoke" : blockers.has(2) ? "smoke" : "wall";
 	$("play-smokes").textContent = state.smokeCount;
 	$("play-hes").textContent = state.heCount;
-	const visibleBots = (state.visibilities || [state.visibility]).filter((visibility) => visibility.visible).length;
+	const visibleBots = visibilities.filter((visibility) => visibility.visible).length;
 	$("play-bot-count").textContent = `${visibleBots}/${state.bots?.length || 1} bots visible`;
 	update_play_visibility();
 }
@@ -2461,80 +2737,124 @@ async function prepare_preview_bots()
 
 async function enter_play_mode()
 {
-	if (!play_ready()) return;
-	try { if (bot_weapon_key !== $("bot-weapon-select").value) await load_bot_weapon($("bot-weapon-select").value); }
-	catch (error) { status_extra = `Bot weapon unavailable: ${error.message}`; }
-	play_active = true;
-	play_paused = false;
-	play_debug = false;
-	last_play_debug_draw = -Infinity;
-	last_play_traversal_request = -Infinity;
-	debug_trace_smoothing = null;
-	clear_map_traversal();
-	$("play-bvh").textContent = "BVH traversal appears in Debug mode.";
-	update_map_material();
-	play_third_person = false;
-	play_scoped = false;
-	play_eye_height = 64;
-	play_eye_height_target = 64;
-	camera.fov = k_world_fov;
-	camera.updateProjectionMatrix();
-	play_weapon_key = $("player-primary-select").value;
-	play_firing = false;
-	play_grenade_holding = false;
-	play_next_fire_time = 0;
-	play_busy_until = 0;
-	player_world_action_until = 0;
-	++play_action_serial;
-	for (const [key, stats] of Object.entries(k_weapon_stats))
+	if (!play_ready() || play_active) return;
+	const session = ++play_session_id;
+	const primaryKey = $("player-primary-select").value;
+	const botKey = $("bot-weapon-select").value;
+	try
 	{
-		if (stats.clip !== null) play_ammo[key] = stats.clip;
+		const navPromise = load_play_nav();
+		const loads = await Promise.allSettled([
+			bot_weapon_key === botKey ? Promise.resolve() : load_bot_weapon(botKey),
+			load_viewmodel_weapon(primaryKey)
+		]);
+		const nav = await navPromise;
+		if (session !== play_session_id || !play_ready()) return;
+		const loadError = loads.find((result) => result.status === "rejected");
+		if (loadError) status_extra = `Play visual asset unavailable: ${loadError.reason?.message || loadError.reason}`;
+
+		play_active = true;
+		play_paused = true;
+		play_debug = false;
+		last_play_debug_draw = -Infinity;
+		last_play_traversal_request = -Infinity;
+		debug_trace_smoothing = null;
+		extra_debug_smoothing.length = 0;
+		play_pose_from = null;
+		play_pose_to = null;
+		play_pose_elapsed = 0;
+		for (let index = 0; index < extra_bot_render_poses.length; ++index)
+			Object.assign(extra_bot_render_poses[index], extra_target_poses[index]);
+		clear_map_traversal();
+		$("play-bvh").textContent = "BVH traversal appears in Debug mode.";
+		update_map_material();
+		play_third_person = false;
+		play_scoped = false;
+		play_eye_height = 64;
+		play_eye_height_target = 64;
+		camera.fov = k_world_fov;
+		camera.updateProjectionMatrix();
+		play_weapon_key = primaryKey;
+		play_firing = false;
+		play_grenade_holding = false;
+		play_next_fire_time = 0;
+		play_busy_until = 0;
+		player_world_action_until = 0;
+		++play_action_serial;
+		play_scheduled.length = 0;
+		last_player_step = 0;
+		last_bot_steps.fill(0);
+		clear_play_input();
+		for (const [key, stats] of Object.entries(k_weapon_stats))
+		{
+			if (stats.clip !== null) play_ammo[key] = stats.clip;
+		}
+		runtime_animation_enabled = true;
+		play_nav = nav;
+		orbit.enabled = false;
+		transform.detach();
+		if (viewer_model) viewer_model.visible = false;
+		if (weapon_mount) weapon_mount.visible = false;
+		if (bot_weapon_mount) bot_weapon_mount.visible = true;
+		create_extra_bots();
+		if (viewmodel_root) viewmodel_root.visible = true;
+		play_viewmodel_action("draw");
+		play_world_action("draw");
+		play_sound(weapon_draw_sound(play_weapon_key), null, 0.42);
+		$("play-hud").hidden = false;
+		update_play_item();
+		$("play-paused").hidden = false;
+		const tuning = runtime_tuning();
+		map_worker.postMessage({type: "play-start", settings: {
+			viewer: {...viewer_pose},
+			target: {...target_pose},
+			extraTargets: extra_target_poses.map((pose) => ({...pose})),
+			pingMs: read_number("viewer-ping"),
+			tuning,
+			heRadius: read_number("he-clear-radius"),
+			heSeconds: read_number("he-clear-seconds"),
+			seed: read_number("simulation-seed"),
+			botMuzzleLength: weapon_muzzle_length(botKey),
+			playerSpeed: k_weapon_stats[play_weapon_key].speed,
+			botSpeed: k_weapon_stats[botKey]?.speed || 225,
+			nav: play_nav
+		}, paused: true});
+		status_extra = play_nav ? "Play mode started with CS2 navigation." : "Play mode started with BVH fallback roaming.";
+		update_status();
+		await request_play_pointer_lock();
 	}
-	runtime_animation_enabled = true;
-	play_nav = await load_play_nav();
-	orbit.enabled = false;
-	transform.detach();
-	viewer_model.visible = false;
-	if (weapon_mount) weapon_mount.visible = false;
-	if (bot_weapon_mount) bot_weapon_mount.visible = true;
-	create_extra_bots();
-	if (viewmodel_root) viewmodel_root.visible = true;
-	await Promise.all([load_viewmodel_weapon(play_weapon_key), load_player_weapon(play_weapon_key)]);
-	play_viewmodel_action("draw");
-	play_world_action("draw");
-	play_sound(weapon_draw_sound(play_weapon_key), null, 0.42);
-	$("play-hud").hidden = false;
-	update_play_item();
-	$("play-paused").hidden = true;
-	map_worker.postMessage({type: "play-start", settings: {
-		viewer: {...viewer_pose},
-		target: {...target_pose},
-		extraTargets: extra_target_poses.map((pose) => ({...pose})),
-		pingMs: read_number("viewer-ping"),
-		playerSpeed: k_weapon_stats[play_weapon_key].speed,
-		botSpeed: k_weapon_stats[$("bot-weapon-select").value]?.speed || 225,
-		nav: play_nav
-	}});
-	status_extra = play_nav ? "Play mode started with CS2 navigation." : "Play mode started with BVH fallback roaming.";
-	update_status();
-	await request_play_pointer_lock();
+	catch (error)
+	{
+		if (session !== play_session_id) return;
+		leave_play_mode();
+		status_extra = `Play could not start: ${error.message || error}`;
+		update_status();
+	}
 }
 
 function leave_play_mode()
 {
+	++play_session_id;
 	if (!play_active) return;
 	if (play_state?.bots)
 		for (let index = 0; index < extra_target_poses.length; ++index)
 			Object.assign(extra_target_poses[index], play_state.bots[index + 1]?.origin || extra_target_poses[index],
-				{yaw: play_state.bots[index + 1]?.yaw || extra_target_poses[index].yaw, placed: true});
+				{yaw: play_state.bots[index + 1]?.yaw ?? extra_target_poses[index].yaw, placed: true});
 	map_worker.postMessage({type: "play-stop"});
 	play_active = false;
 	debug_trace_smoothing = null;
+	extra_debug_smoothing.length = 0;
+	play_pose_from = null;
+	play_pose_to = null;
+	play_pose_elapsed = 0;
+	for (let index = 0; index < extra_bot_render_poses.length; ++index)
+		Object.assign(extra_bot_render_poses[index], extra_target_poses[index]);
 	clear_map_traversal();
 	update_map_material();
 	play_paused = true;
 	play_firing = false;
 	play_look_dirty = false;
+	clear_play_input();
 	play_grenade_holding = false;
 	play_third_person = false;
 	play_scoped = false;
@@ -2542,6 +2862,7 @@ function leave_play_mode()
 	camera.fov = k_world_fov;
 	camera.updateProjectionMatrix();
 	++play_action_serial;
+	play_scheduled.length = 0;
 	play_state = null;
 	if (play_pointer_locked()) document.exitPointerLock();
 	document.body.classList.remove("play-locked");
@@ -2578,8 +2899,12 @@ function leave_play_mode()
 function set_runtime_mode(preview)
 {
 	leave_play_mode();
-	if (preview && runtime_body_bindings.length === 0)
+	if (preview && !capture_runtime_body_bindings())
 	{
+		status_extra = points.length === k_runtime_body_bones.length
+			? "Runtime preview unavailable: the loaded model is missing a required bone."
+			: "Runtime preview requires exactly 15 body points.";
+		update_status();
 		return;
 	}
 	runtime_animation_enabled = preview;
@@ -2595,13 +2920,22 @@ function set_runtime_mode(preview)
 	update_scene();
 }
 
-function apply_readable_materials(root)
+function apply_readable_materials(root, releaseSource = false)
 {
 	root.traverse((node) =>
 	{
 		if (!node.isMesh)
 		{
 			return;
+		}
+		if (releaseSource)
+		{
+			const materials = Array.isArray(node.material) ? node.material : [node.material];
+			for (const material of materials)
+			{
+				for (const value of Object.values(material || {})) if (value?.isTexture) value.dispose();
+				material?.dispose?.();
+			}
 		}
 		node.material = new THREE.MeshStandardMaterial({
 			color: 0x747a81,
@@ -2689,7 +3023,9 @@ function hand_parent()
 
 function clear_weapon()
 {
+	++weapon_load_id;
 	weapon_mount?.parent?.remove(weapon_mount);
+	dispose_root(weapon_model, true, true, true);
 	weapon_mount = null;
 	weapon_model = null;
 }
@@ -2756,6 +3092,7 @@ function apply_weapon_grip(key)
 async function load_weapon(key)
 {
 	clear_weapon();
+	const loadId = weapon_load_id;
 	active_weapon_key = key;
 	if (!play_active)
 		load_viewmodel_weapon(key).catch((error) => { status_extra = `Viewmodel unavailable: ${error.message}`; update_status(); });
@@ -2786,8 +3123,9 @@ async function load_weapon(key)
 		{
 			loader.load(url, (gltf) =>
 			{
-				if (active_weapon_key !== key)
+				if (loadId !== weapon_load_id || active_weapon_key !== key)
 				{
+					dispose_root(gltf.scene, true, true, true);
 					resolve();
 					return;
 				}
@@ -2824,7 +3162,9 @@ async function load_weapon(key)
 
 function clear_bot_weapon()
 {
+	++bot_weapon_load_id;
 	bot_weapon_mount?.parent?.remove(bot_weapon_mount);
+	dispose_root(bot_weapon_model, true, true, true);
 	bot_weapon_mount = null;
 	bot_weapon_model = null;
 	bot_weapon_key = "";
@@ -2832,9 +3172,15 @@ function clear_bot_weapon()
 
 function clear_extra_bots()
 {
-	for (const bot of extra_bot_models) scene.remove(bot);
+	for (const mixer of extra_bot_mixers) mixer.stopAllAction();
+	for (const bot of extra_bot_models)
+	{
+		scene.remove(bot);
+		dispose_root(bot, false, true);
+	}
 	extra_bot_models.length = 0;
 	extra_bot_mixers.length = 0;
+	extra_bot_body_bindings.length = 0;
 }
 
 function create_extra_bots()
@@ -2856,6 +3202,12 @@ function create_extra_bots()
 		bot.visible = true;
 		scene.add(bot);
 		extra_bot_models.push(bot);
+		const bindings = runtime_body_bindings.map((binding) =>
+		{
+			const bone = bot.getObjectByName(binding.bone.name);
+			return bone ? {bone, offset: binding.offset.clone(), position: new THREE.Vector3()} : null;
+		});
+		extra_bot_body_bindings.push(bindings.length === k_runtime_body_bones.length && bindings.every(Boolean) ? bindings : []);
 		const mixer = new THREE.AnimationMixer(bot);
 		extra_bot_mixers.push(mixer);
 		choose_bot_animation({velocity: {x: 0, y: 0, z: 0}, speed: 0, grounded: true, crouched: false, yaw: extra_target_poses[index].yaw}, mixer);
@@ -2865,15 +3217,40 @@ function create_extra_bots()
 
 async function load_bot_weapon(key)
 {
+	clear_extra_bots();
 	clear_bot_weapon();
+	const loadId = bot_weapon_load_id;
 	const url = manifest_models[key];
-	if (!url || !model || !key) return;
-	const gltf = await loader.loadAsync(url);
+	if (!url || !model || !key)
+	{
+		create_extra_bots();
+		return;
+	}
+	let gltf;
+	try
+	{
+		gltf = await loader.loadAsync(url);
+	}
+	catch (error)
+	{
+		if (loadId === bot_weapon_load_id) create_extra_bots();
+		throw error;
+	}
+	if (loadId !== bot_weapon_load_id || $("bot-weapon-select").value !== key || !model)
+	{
+		dispose_root(gltf.scene, true, true, true);
+		return;
+	}
+	const grip = gltf.scene.getObjectByName("ag1_hand_r");
+	if (!grip)
+	{
+		dispose_root(gltf.scene, true, true, true);
+		create_extra_bots();
+		throw new Error(`${key} has no right-hand grip`);
+	}
 	bot_weapon_key = key;
 	bot_weapon_model = gltf.scene;
 	bot_weapon_model.updateWorldMatrix(true, true);
-	const grip = bot_weapon_model.getObjectByName("ag1_hand_r");
-	if (!grip) throw new Error(`${key} has no right-hand grip`);
 	grip.updateWorldMatrix(true, false);
 	bot_weapon_model.applyMatrix4(grip.matrixWorld.clone().invert());
 	bot_weapon_mount = new THREE.Group();
@@ -2886,6 +3263,7 @@ async function load_bot_weapon(key)
 
 function clear_player_weapon()
 {
+	++player_weapon_load_id;
 	player_weapon_mount?.parent?.remove(player_weapon_mount);
 	player_weapon_mount = null;
 	player_weapon_model = null;
@@ -2894,11 +3272,12 @@ function clear_player_weapon()
 async function load_player_weapon(key)
 {
 	clear_player_weapon();
+	const loadId = player_weapon_load_id;
 	if (!play_third_person) return;
 	if (!viewer_model || !key || !manifest_models[key]) return;
 	const asset = await load_viewmodel_asset(key);
 	const heldKey = play_grenade === "smoke" ? "smokegrenade" : play_grenade === "he" ? "hegrenade" : play_weapon_key;
-	if (!play_active || heldKey !== key) return;
+	if (loadId !== player_weapon_load_id || !play_active || heldKey !== key) return;
 	player_weapon_model = clone_skeleton(asset.scene);
 	player_weapon_model.updateWorldMatrix(true, true);
 	const grip = player_weapon_model.getObjectByName("ag1_hand_r");
@@ -2921,19 +3300,18 @@ function load_viewmodel_asset(key)
 		const promise = (async () =>
 		{
 			const animationEntries = Object.entries(local_manifest.animations?.[key] || {});
-			const [gltf, ...clipAssets] = await Promise.all([
-				loader.loadAsync(manifest_models[key]),
-				...animationEntries.map(([, url]) => loader.loadAsync(url))
-			]);
+			const gltf = await loader.loadAsync(manifest_models[key]);
+			const clipAssets = await Promise.allSettled(animationEntries.map(([, url]) => loader.loadAsync(url)));
 			const animations = {};
 			for (let index = 0; index < animationEntries.length; ++index)
 			{
-				const clip = clipAssets[index].animations?.[0];
+				const clip = clipAssets[index].status === "fulfilled" ? clipAssets[index].value.animations?.[0] : null;
 				if (clip) animations[animationEntries[index][0]] = clip;
 			}
 			return {scene: gltf.scene, animations};
 		})();
 		viewmodel_asset_cache.set(key, promise);
+		promise.catch(() => { if (viewmodel_asset_cache.get(key) === promise) viewmodel_asset_cache.delete(key); });
 	}
 	return viewmodel_asset_cache.get(key);
 }
@@ -2944,6 +3322,7 @@ async function load_viewmodel_weapon(key)
 	const loadId = ++viewmodel_load_id;
 	viewmodel_mixer?.stopAllAction();
 	viewmodel_weapon_mount?.parent?.remove(viewmodel_weapon_mount);
+	dispose_root(viewmodel_weapon, false, true);
 	viewmodel_weapon_mount = null;
 	viewmodel_weapon = null;
 	viewmodel_animations = {};
@@ -3035,10 +3414,7 @@ function play_sound_sequence(entries, serial = play_action_serial)
 {
 	for (const [delay, key, volume = 0.45] of entries)
 	{
-		setTimeout(() =>
-		{
-			if (play_active && serial === play_action_serial) play_sound(key, null, volume);
-		}, delay * 1000);
+		schedule_play(delay, () => play_sound(key, null, volume), serial);
 	}
 }
 
@@ -3105,6 +3481,14 @@ async function load_viewmodel_arms(url)
 {
 	if (!url || !viewmodel_root) return;
 	const gltf = await loader.loadAsync(url);
+	++viewmodel_load_id;
+	viewmodel_mixer?.stopAllAction();
+	viewmodel_weapon_mount?.parent?.remove(viewmodel_weapon_mount);
+	dispose_root(viewmodel_weapon, false, true);
+	dispose_root(viewmodel_arms, true, true, true);
+	viewmodel_weapon_mount = null;
+	viewmodel_weapon = null;
+	viewmodel_animations = {};
 	viewmodel_root.clear();
 	viewmodel_arms = gltf.scene;
 	apply_viewmodel_materials(viewmodel_arms);
@@ -3153,20 +3537,33 @@ function spawn_shell_casing()
 
 async function load_bot_model_from_url(url)
 {
+	leave_play_mode();
+	const loadId = ++model_load_id;
 	const gltf = await loader.loadAsync(url);
+	if (loadId !== model_load_id)
+	{
+		dispose_root(gltf.scene, true, true, true);
+		return false;
+	}
 	clear_extra_bots();
 	clear_bot_weapon();
 	clear_weapon();
-	if (model) scene.remove(model);
+	if (model)
+	{
+		scene.remove(model);
+		// viewer_model is a skeleton clone and still shares this geometry.
+		dispose_root(model, false, true);
+	}
 	model = gltf.scene;
 	model_animations = viewer_animations.length ? viewer_animations : (gltf.animations || []);
 	model.rotation.set(0, 0, 0);
-	apply_readable_materials(model);
+	apply_readable_materials(model, true);
 	scene.add(model);
 	model_mixer = make_mixer({animations: model_animations}, model);
 	capture_runtime_body_bindings();
 	refresh_animation_choices();
 	apply_player_transforms();
+	return true;
 }
 
 async function load_preset(url)
@@ -3183,28 +3580,40 @@ async function load_preset(url)
 
 async function load_model_from_url(url)
 {
+	leave_play_mode();
+	const loadId = ++model_load_id;
 	return new Promise((resolve, reject) =>
 	{
 		loader.load(url, (gltf) =>
 		{
+			if (loadId !== model_load_id)
+			{
+				dispose_root(gltf.scene, true, true, true);
+				resolve(false);
+				return;
+			}
 			if (model)
 			{
+				clear_extra_bots();
+				clear_bot_weapon();
 				clear_weapon();
 				scene.remove(model);
+				dispose_root(model, true, true);
+			}
+			if (viewer_model)
+			{
+				scene.remove(viewer_model);
+				dispose_root(viewer_model, true, true);
+				viewer_model = null;
 			}
 			model = gltf.scene;
 			model_animations = gltf.animations || [];
 			refresh_animation_choices();
 			model.rotation.set(0, 0, 0);
-			apply_readable_materials(model);
+			apply_readable_materials(model, true);
 			scene.add(model);
 			model_mixer = make_mixer(gltf, model);
 			const animated = capture_runtime_body_bindings();
-			if (viewer_model)
-			{
-				scene.remove(viewer_model);
-				viewer_model = null;
-			}
 			viewer_model = clone_skeleton(model);
 			viewer_animations = model_animations;
 			apply_readable_materials(viewer_model);
@@ -3226,7 +3635,7 @@ async function load_model_from_url(url)
 				? (runtime_animation_active() ? "SAS loaded. Runtime bone animation is active." : "SAS loaded. Static point editing is active.")
 				: "SAS loaded without the 15 runtime bones; using static points.";
 			update_scene();
-			resolve();
+			resolve(true);
 		}, undefined, reject);
 	});
 }
@@ -3244,29 +3653,34 @@ async function load_manifest()
 		local_manifest = manifest;
 		manifest_models = manifest.models || {};
 		update_play_item();
-		if (manifest.models?.ct_sas)
+		if (!manifest.models?.ct_sas) throw new Error("manifest has no ct_sas model");
+		model_status = "Model loading";
+		status_extra = "Loading local CT, T, and viewmodel assets...";
+		update_status();
+		if (!await load_model_from_url(manifest.models.ct_sas)) return;
+
+		const warnings = [];
+		const optional = async (label, operation) =>
 		{
-			model_status = "Model loading";
-			status_extra = "Loading local CT, T, and viewmodel assets...";
-			update_status();
-			await load_model_from_url(manifest.models.ct_sas);
-			if (manifest.models.t_phoenix) await load_bot_model_from_url(manifest.models.t_phoenix);
-			await load_material_art(manifest.materials || {});
-			if (manifest.models.viewmodel_arms) await load_viewmodel_arms(manifest.models.viewmodel_arms);
-			await load_particle_art(manifest.particles || {});
-			await load_grenade_templates();
-			await Promise.all(Object.keys(manifest.animations || {}).map((key) => load_viewmodel_asset(key)));
-			await load_bot_weapon($("bot-weapon-select").value);
-			if (bot_weapon_mount) bot_weapon_mount.visible = false;
-			if (active_weapon_key) await load_weapon(active_weapon_key);
-			model_status = manifest.models.t_phoenix ? "CT + Phoenix loaded" : "SAS loaded; Phoenix missing";
-			status_extra = manifest.models.t_phoenix
-				? "Local CT, Phoenix, and FPS assets loaded."
+			try { return await operation() !== false; }
+			catch (error) { warnings.push(`${label}: ${error.message || error}`); return false; }
+		};
+		const phoenixLoaded = Boolean(manifest.models.t_phoenix)
+			&& await optional("Phoenix", () => load_bot_model_from_url(manifest.models.t_phoenix));
+		await optional("materials", () => load_material_art(manifest.materials || {}));
+		if (manifest.models.viewmodel_arms) await optional("viewmodel arms", () => load_viewmodel_arms(manifest.models.viewmodel_arms));
+		await optional("particles", () => load_particle_art(manifest.particles || {}));
+		await optional("grenades", load_grenade_templates);
+		await optional("animations", () => Promise.all(Object.keys(manifest.animations || {}).map((key) => load_viewmodel_asset(key))));
+		await optional("bot weapon", () => load_bot_weapon($("bot-weapon-select").value));
+		if (bot_weapon_mount) bot_weapon_mount.visible = false;
+		if (active_weapon_key) await optional("weapon preview", () => load_weapon(active_weapon_key));
+		model_status = phoenixLoaded ? "CT + Phoenix loaded" : "SAS loaded; Phoenix missing";
+		status_extra = warnings.length
+			? `Core models loaded; optional assets skipped (${warnings.join("; ")}).`
+			: phoenixLoaded ? "Local CT, Phoenix, and FPS assets loaded."
 				: "Phoenix is unavailable; Play uses the loaded target model.";
-			update_scene();
-			return;
-		}
-		throw new Error("manifest has no ct_sas model");
+		update_scene();
 	}
 	catch (error)
 	{
@@ -3292,7 +3706,7 @@ function update_range_labels()
 	$("point-opacity-value").textContent = `${Math.round(read_number("point-opacity") * 100)}%`;
 	$("weapon-scale-value").textContent = `${read_number("weapon-scale").toFixed(2)}x`;
 	$("map-opacity-value").textContent = `${Math.round(read_number("map-opacity") * 100)}%`;
-	$("viewer-ping-value").textContent = `${Math.round(read_number("viewer-ping"))} ms / ${format_number(shoulder_offset(read_number("viewer-ping")))} units`;
+	$("viewer-ping-value").textContent = `${Math.round(read_number("viewer-ping"))} ms / ${format_number(shoulder_offset(read_number("viewer-ping"), runtime_tuning()))} units`;
 }
 
 function install_ui()
@@ -3354,11 +3768,14 @@ function install_ui()
 			});
 		}
 	}
-	$("viewer-ping").addEventListener("input", () =>
+	for (const id of ["viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "he-clear-radius", "he-clear-seconds", "simulation-seed"])
 	{
-		update_range_labels();
-		request_map_trace();
-	});
+		$(id).addEventListener("input", () =>
+		{
+			update_range_labels();
+			if (id.startsWith("shoulder") || id === "viewer-ping") request_map_trace();
+		});
+	}
 	for (const button of document.querySelectorAll("[data-movement-button]"))
 	{
 		button.addEventListener("click", () =>
@@ -3446,13 +3863,22 @@ function install_ui()
 			update_viewmodel_weapon_transform(key);
 		});
 	}
-	$("sas-file").addEventListener("change", (event) =>
+	$("sas-file").addEventListener("change", async (event) =>
 	{
 		const file = event.target.files[0];
-		if (file)
+		event.target.value = "";
+		if (!file) return;
+		const url = URL.createObjectURL(file);
+		try
 		{
-			load_model_from_url(URL.createObjectURL(file));
+			await load_model_from_url(url);
 		}
+		catch (error)
+		{
+			status_extra = `Model could not load: ${error.message || error}`;
+			update_status();
+		}
+		finally { URL.revokeObjectURL(url); }
 	});
 	for (const id of ["model-opacity", "point-opacity", "min-x", "min-y", "min-z", "max-x", "max-y", "max-z"])
 	{
@@ -3631,7 +4057,7 @@ function play_world_action(id)
 	const name = play_state?.player.crouched && choice.crouchClip ? choice.crouchClip : choice.clip;
 	const clip = THREE.AnimationClip.findByName(viewer_animations, name);
 	if (!clip || !viewer_mixer) return 0;
-	player_world_action_until = performance.now() / 1000 + clip.duration;
+	player_world_action_until = play_now() + clip.duration;
 	choose_player_animation(play_state?.player);
 	viewer_mixer.cs2fow_overlay?.fadeOut(0.08);
 	const overlay = viewer_mixer.clipAction(masked_world_clip(clip, true)).reset();
@@ -3719,20 +4145,20 @@ function reload_play_weapon()
 	const stats = k_weapon_stats[play_weapon_key];
 	if (!stats || stats.clip === null || play_ammo[play_weapon_key] >= stats.clip) return;
 	set_play_scope(false);
-	const now = performance.now() / 1000;
+	const now = play_now();
 	if (now < play_busy_until) return;
 	const key = play_weapon_key;
 	const serial = ++play_action_serial;
 	const duration = Math.max(0.2, play_action("reload") || 1.5);
 	play_busy_until = now + duration;
 	play_reload_sounds(key, serial);
-	setTimeout(() =>
+	schedule_play(duration, () =>
 	{
 		if (!play_active || serial !== play_action_serial || play_weapon_key !== key || play_grenade) return;
 		play_ammo[key] = stats.clip;
 		play_busy_until = 0;
 		update_play_item();
-	}, duration * 1000);
+	}, serial);
 }
 
 function fire_play_weapon()
@@ -3740,7 +4166,7 @@ function fire_play_weapon()
 	if (play_grenade) return;
 	const stats = k_weapon_stats[play_weapon_key];
 	if (!stats) return;
-	const now = performance.now() / 1000;
+	const now = play_now();
 	if (now < play_next_fire_time || now < play_busy_until) return;
 	if (stats.clip !== null)
 	{
@@ -3773,7 +4199,7 @@ function use_play_secondary()
 		return;
 	}
 	if (play_weapon_key !== "knife") return;
-	const now = performance.now() / 1000;
+	const now = play_now();
 	if (now < play_next_fire_time || now < play_busy_until) return;
 	play_next_fire_time = now + 1;
 	play_action("shoot2");
@@ -3793,10 +4219,10 @@ function release_play_grenade()
 	play_grenade_throw_speed = 750;
 	++play_action_serial;
 	update_play_item();
-	setTimeout(() =>
+	schedule_play(Math.max(0.18, duration), () =>
 	{
 		if (play_active && !play_grenade) equip_play_weapon(play_weapon_key);
-	}, Math.max(180, duration * 1000));
+	});
 }
 
 function use_play_item()
@@ -3829,8 +4255,12 @@ function install_play_controls()
 	{
 		if (!play_active) return;
 		play_paused = !play_pointer_locked();
-		if (play_paused) play_look_dirty = false;
-		if (play_paused) play_firing = false;
+		if (play_paused)
+		{
+			play_look_dirty = false;
+			play_firing = false;
+			clear_play_input();
+		}
 		document.body.classList.toggle("play-locked", !play_paused);
 		$("play-paused").hidden = !play_paused;
 		map_worker.postMessage({type: "play-pause", paused: play_paused});
@@ -3936,6 +4366,26 @@ async function request_play_pointer_lock()
 	}
 }
 
+function place_map_actor(mode, point)
+{
+	const pose = mode === "target" ? target_pose : viewer_pose;
+	Object.assign(pose, point, {placed: true});
+	write_pose_fields(mode, pose);
+	if (mode === "target" && !viewer_pose.placed)
+	{
+		placement_mode = "viewer";
+		status_extra = "Target placed. Click the map to place the viewer.";
+	}
+	else
+	{
+		placement_mode = "";
+		status_extra = "Players placed. Live BVH8 wall checks are active.";
+	}
+	if (map_simulation_ready()) face_players();
+	update_player_poses();
+	if (map_simulation_ready()) frame_players();
+}
+
 function install_picking()
 {
 	const raycaster = new THREE.Raycaster();
@@ -3949,33 +4399,11 @@ function install_picking()
 		raycaster.setFromCamera(pointer, camera);
 		if (placement_mode && map_mesh)
 		{
-			const mapHit = raycaster.intersectObject(map_mesh, false)[0];
-			if (mapHit)
-			{
-				const pose = placement_mode === "target" ? target_pose : viewer_pose;
-				Object.assign(pose, three_to_source(mapHit.point), {placed: true});
-				write_pose_fields(placement_mode, pose);
-				if (placement_mode === "target" && !viewer_pose.placed)
-				{
-					placement_mode = "viewer";
-					status_extra = "Target placed. Click the map to place the viewer.";
-				}
-				else
-				{
-					placement_mode = "";
-					status_extra = "Players placed. Live BVH8 wall checks are active.";
-				}
-				if (map_simulation_ready())
-				{
-					face_players();
-				}
-				update_player_poses();
-				if (map_simulation_ready())
-				{
-					frame_players();
-				}
-				return;
-			}
+			const origin = three_to_source(raycaster.ray.origin);
+			const target = three_to_source(raycaster.ray.origin.clone().addScaledVector(raycaster.ray.direction, 100000));
+			map_worker.postMessage({type: "pick", id: ++placement_pick_id, mapId: map_load_id,
+				mode: placement_mode, origin, target});
+			return;
 		}
 		const hit = raycaster.intersectObjects(marker_group.children, false)[0];
 		if (hit?.object?.userData?.pointIndex !== undefined)
@@ -4030,13 +4458,15 @@ function run_self_checks()
 	update_status();
 	expect($("points-list").querySelectorAll('[role="option"]').length === 15, "point list count");
 	expect($("point-name").value === points[selected_index]?.name, "selected point synchronization");
-	for (const id of ["load-sas", "import-los", "export-toggle", "animation-clip", "runtime-animation", "edit-mode", "play-mode", "points-list", "point-name", "inspector", "points-disclosure", "metrics-hud", "state-hud", "play-hud", "play-result", "play-rays", "play-smokes", "play-hes", "play-bot-count", "play-debug-state", "play-view", "play-blocker", "play-bvh", "player-primary-select", "load-map", "reload-mirage", "unload-map", "place-target", "place-viewer", "viewer-ping", "mouse-sensitivity", "map-opacity", "map-focus", "map-wireframe", "frame-map", "frame-players"])
+	for (const id of ["load-sas", "import-los", "export-toggle", "animation-clip", "runtime-animation", "edit-mode", "play-mode", "points-list", "point-name", "inspector", "points-disclosure", "metrics-hud", "state-hud", "play-hud", "play-result", "play-rays", "play-smokes", "play-hes", "play-bot-count", "play-debug-state", "play-view", "play-blocker", "play-bvh", "player-primary-select", "load-map", "reload-mirage", "unload-map", "place-target", "place-viewer", "viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "he-clear-radius", "he-clear-seconds", "simulation-seed", "mouse-sensitivity", "map-opacity", "map-focus", "map-wireframe", "frame-map", "frame-players"])
 	{
 		expect(Boolean($(id)), `redesigned control: ${id}`);
 	}
 	expect(document.querySelectorAll("[data-scene-panel]").length === 5, "five inspector panels");
 	expect(document.querySelectorAll("[data-movement-button]").length === 4, "WASD controls");
 	expect(Boolean(map_worker), "BVH8 worker");
+	expect(k_debug_draw_interval === 1 / 16 && k_bvh_snapshot_interval === 1 / 16,
+		"16 Hz LOS and BVH debug geometry");
 	expect(shoulder_offset(0) === 48 && shoulder_offset(200) === 128, "runtime ping shoulder range");
 	expect(Object.keys(k_map_spawn_pairs).length === 6, "default map spawn pairs");
 	expect($("points-disclosure").open === false, "collapsed point list");
@@ -4067,6 +4497,23 @@ function run_self_checks()
 		"layered upper/lower body actions");
 	const crouchedEye = THREE.MathUtils.damp(64, 28.5, 14, 1 / 60);
 	expect(crouchedEye < 64 && crouchedEye > 28.5, "smooth crouch camera");
+	const halfwayPose = {};
+	interpolate_pose(halfwayPose, {x: 0, y: 10, z: 20, yaw: 350, height: 72},
+		{x: 10, y: 20, z: 30, yaw: 10, height: FPS_CONSTANTS.crouchedHeight}, 0.5);
+	expect(halfwayPose.x === 5 && halfwayPose.y === 15 && halfwayPose.z === 25
+		&& halfwayPose.yaw === 360 && halfwayPose.height < 72 && halfwayPose.height > FPS_CONSTANTS.crouchedHeight,
+		"one-tick actor interpolation and shortest-path yaw");
+	const debugGeometry = new THREE.BufferGeometry();
+	const debugTarget = new Float32Array([2, 0, 0]);
+	debugGeometry.setAttribute("position", new THREE.BufferAttribute(debugTarget, 3));
+	const debugPoint = new THREE.Points(debugGeometry, new THREE.PointsMaterial());
+	const debugParent = new THREE.Group();
+	debugParent.add(debugPoint);
+	queue_extra_debug_interpolation(debugPoint, debugTarget, new Float32Array([0, 0, 0]));
+	update_extra_debug_smoothing(k_debug_draw_interval / 2);
+	expect(debugGeometry.getAttribute("position").array[0] === 1, "extra debug geometry interpolation");
+	extra_debug_smoothing.length = 0;
+	clear_group(debugParent);
 	expect(Boolean(document.querySelector(".play-gate-line")) && !document.querySelector(".play-top-status, .play-help, .play-movement"),
 		"focused Play HUD");
 	expect(k_reload_sound_sequences.usp_silencer.length === 5
@@ -4088,7 +4535,7 @@ function run_self_checks()
 		&& should_show_viewer_model(true, true, true, true), "first-person world-model isolation");
 	expect(map_material_state(0.2).opacity === 0.2 && map_material_state(0.2).transparent,
 		"map opacity control");
-	expect(map_material_state(0.8, true).opacity === 0.05, "BVH traversal fades skipped map triangles");
+	expect(map_material_state(0.8).opacity === 0.8, "BVH traversal preserves map opacity");
 	expect(k_viewmodel_offset.x === 2.5 && k_viewmodel_offset.y === 2 && k_viewmodel_offset.z === -1,
 		"CS2 viewmodel offsets");
 	expect(["x", "y", "z"].every((axis) => $(`viewmodel-weapon-${axis}`))
@@ -4225,6 +4672,7 @@ function animate()
 {
 	requestAnimationFrame(animate);
 	const delta = animation_clock.getDelta();
+	const activeDelta = play_active && play_paused ? 0 : delta;
 	if (play_look_dirty && play_active && !play_paused)
 	{
 		play_look_dirty = false;
@@ -4234,22 +4682,26 @@ function animate()
 		fire_play_weapon();
 	if (play_active)
 	{
-		play_eye_height = THREE.MathUtils.damp(play_eye_height, play_eye_height_target, 14, delta);
+		update_play_pose_interpolation(activeDelta);
+		play_eye_height = THREE.MathUtils.damp(play_eye_height, play_eye_height_target, 14, activeDelta);
 		update_play_camera();
 	}
 	update_map_focus();
-	if (runtime_animation_active())
+	const animationsActive = runtime_animation_active() || play_active;
+	if (animationsActive)
 	{
-		model_mixer?.update(delta);
-		for (const mixer of extra_bot_mixers) mixer.update(delta);
-		viewer_mixer?.update(delta);
-		update_animated_preview();
+		model_mixer?.update(activeDelta);
+		for (const mixer of extra_bot_mixers) mixer.update(activeDelta);
+		viewer_mixer?.update(activeDelta);
 	}
-	viewmodel_mixer?.update(delta);
-	update_viewmodel_motion(delta);
-	update_debug_trace_smoothing(delta);
-	update_explosion_effects(delta);
-	update_shot_effects(delta);
+	if (animationsActive) update_animated_preview();
+	viewmodel_mixer?.update(activeDelta);
+	update_viewmodel_motion(activeDelta);
+	update_debug_trace_smoothing(activeDelta);
+	update_extra_debug_smoothing(activeDelta);
+	update_grenade_interpolation(activeDelta);
+	update_explosion_effects(activeDelta);
+	update_shot_effects(activeDelta);
 	renderer.clear();
 	renderer.render(scene, camera);
 	if (viewmodel_root?.visible)
