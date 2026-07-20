@@ -48,6 +48,8 @@ def main() -> None:
     viewer_block = viewer_text.split("const k_runtime_body_bones = [", 1)[1].split("];", 1)[0]
     viewer_bones = re.findall(r'"([^"]+)"', viewer_block)
     assert viewer_bones == runtime_bones
+    assert "point_vec(points[index])" in viewer_text
+    assert "point_vec(default_points[index])" not in viewer_text
 
     print("visibility point preset and Studio bones match compiled CS2FOW points")
 

@@ -31,11 +31,23 @@ const SMOKE_BLOCK = 0.2;
 const SMOKE_MAX_STEPS = 128;
 const SMOKE_LIMIT = 32;
 const HE_LIMIT = 64;
-const HE_RADIUS = 100;
-const HE_SECONDS = 2.5;
+const DEFAULT_HE_RADIUS = 100;
+const DEFAULT_HE_SECONDS = 2.5;
 const BULLET_SMOKE_RADIUS = 28;
 const BULLET_SMOKE_SECONDS = 0.8;
 const GROUND_NORMAL_Z = Math.cos(FPS_CONSTANTS.maxSlopeDegrees * Math.PI / 180);
+const NATIVE_BODY_POINTS = Object.freeze([
+	[5.609201635493794, -1.4428278502142438, 64.2012733036622],
+	[2.0125293444485384, 2.7306012182339385, 59.938710028873956],
+	[0, 3.6606043089445834, 54], [-3.4531053226609565, 5.946114299110735, 38],
+	[6.649097464536467, 9.206736663527453, 61.50515964236403],
+	[-4.609436263442105, -6.65497499510368, 62.674399985034256],
+	[2.023447514568512, 12.575529525946793, 38.476983901746856], [-3.5065278282472674, -5.103061971464753, 38],
+	[11.492137476801554, 6, 22], [-4.297040890272927, -6, 22],
+	[11.870334433375513, 10.522994945593906, 4], [-11.849791908865742, -5, 4],
+	[0, -10.546890805234906, 51.22609251649996], [16.97650970898366, 6.7731795517149544, 51.74577989786342],
+	[-1.738377928258503, 4.30848079861881, 46.753597185311996]
+]);
 
 const add = (a, b) => ({x: a.x + b.x, y: a.y + b.y, z: a.z + b.z});
 const sub = (a, b) => ({x: a.x - b.x, y: a.y - b.y, z: a.z - b.z});
@@ -521,29 +533,33 @@ function smoke_volume_density(volume, origin, target, cuts, now)
 	return accumulated;
 }
 
-function he_opens_smoke(map, clearance, smoke, origin, target, now)
+function he_opens_smoke(map, clearance, smoke, origin, target, now, heRadius, heSeconds)
 {
 	const age = now - clearance.time;
-	if (age < 0 || age >= HE_SECONDS || clearance.time < smoke.startTime) return false;
+	if (heRadius <= 0 || heSeconds <= 0 || age < 0 || age >= heSeconds || clearance.time < smoke.startTime) return false;
 	const boxDistance = {
 		x: Math.max(Math.abs(clearance.center.x - smoke.center.x) - SMOKE_HALF, 0),
 		y: Math.max(Math.abs(clearance.center.y - smoke.center.y) - SMOKE_HALF, 0),
 		z: Math.max(Math.abs(clearance.center.z - smoke.center.z) - SMOKE_HALF, 0)
 	};
-	if (length_sq(boxDistance) > HE_RADIUS ** 2) return false;
+	if (length_sq(boxDistance) > heRadius ** 2) return false;
 	const direction = sub(target, origin);
 	const parameter = length_sq(direction) <= 0 ? 0 : clamp(dot(sub(clearance.center, origin), direction) / length_sq(direction), 0, 1);
 	const closest = add(origin, mul(direction, parameter));
-	return length_sq(sub(clearance.center, closest)) <= HE_RADIUS ** 2 && !map.segment_blocked(clearance.center, closest).blocked;
+	return length_sq(sub(clearance.center, closest)) <= heRadius ** 2 && !map.segment_blocked(clearance.center, closest).blocked;
 }
 
-export function smoke_line_blocked(map, smokes, clearances, origin, target, now, cuts = [])
+export function smoke_line_blocked(map, smokes, clearances, origin, target, now, cuts = [], tuning = {})
 {
 	if (!finite_vec(origin) || !finite_vec(target)) return false;
+	const requestedRadius = Number(tuning.heRadius);
+	const requestedSeconds = Number(tuning.heSeconds);
+	const heRadius = Number.isFinite(requestedRadius) ? clamp(requestedRadius, 0, 320) : DEFAULT_HE_RADIUS;
+	const heSeconds = Number.isFinite(requestedSeconds) ? clamp(requestedSeconds, 0, 10) : DEFAULT_HE_SECONDS;
 	let total = 0;
 	for (const smoke of smokes)
 	{
-		if (clearances.some((clearance) => he_opens_smoke(map, clearance, smoke, origin, target, now))) continue;
+		if (clearances.some((clearance) => he_opens_smoke(map, clearance, smoke, origin, target, now, heRadius, heSeconds))) continue;
 		total += smoke_volume_density(smoke, origin, target, cuts, now) * smoke_age_scale(now - smoke.startTime);
 		if (total >= SMOKE_BLOCK) return true;
 	}
@@ -647,18 +663,66 @@ export function route_between(nav, startPoint, targetPoint)
 	return [];
 }
 
-export function default_targets(bot)
+function target_height(bot)
 {
+	const requestedHeight = Number(bot.height);
+	return Number.isFinite(requestedHeight) ? Math.max(0, requestedHeight)
+		: bot.crouched ? FPS_CONSTANTS.crouchedHeight : 72;
+}
+
+function adjusted_target_z(bot, z)
+{
+	if (z < 38) return z;
+	const height = target_height(bot);
+	return 38 + (z - 38) * Math.max(0, height - 38) / 34;
+}
+
+function target_world_point(bot, point)
+{
+	const yaw = (Number(bot.yaw) || 0) * Math.PI / 180;
+	const cosine = Math.cos(yaw);
+	const sine = Math.sin(yaw);
+	return {
+		x: bot.origin.x + cosine * point[0] - sine * point[1],
+		y: bot.origin.y + sine * point[0] + cosine * point[1],
+		z: bot.origin.z + adjusted_target_z(bot, point[2])
+	};
+}
+
+export function weapon_muzzle_length(key)
+{
+	return key === "usp_silencer" ? 18 : key === "m4a1_silencer" ? 36 : key === "awp" ? 52 : 0;
+}
+
+export function target_muzzle(bot, muzzleLength)
+{
+	return muzzleLength > 0 ? target_world_point(bot, [muzzleLength, 0, 60]) : null;
+}
+
+export function default_targets(bot, muzzleLength = 0)
+{
+	const height = target_height(bot);
 	const local = [
 		[-24, -24, 0], [24, -24, 0], [-24, 24, 0], [24, 24, 0],
-		[-24, -24, 80], [24, -24, 80], [-24, 24, 80], [24, 24, 80],
-		[0, 0, 64], [0, 0, 59], [0, 0, 54], [0, 0, 38], [-8, 8, 61], [8, -8, 61],
-		[-8, 4, 42], [8, -4, 42], [-7, 3, 22], [7, -3, 22], [-7, 3, 7], [7, -3, 7],
-		[-6, 8, 48], [6, -8, 48], [0, 0, 47]
+		[-24, -24, height + 8], [24, -24, height + 8], [-24, 24, height + 8], [24, 24, height + 8],
+		...NATIVE_BODY_POINTS
 	];
+	if (muzzleLength > 0) local.push([muzzleLength, 0, 60]);
 	const values = new Float32Array(local.length * 3);
-	local.forEach((point, index) => values.set([bot.origin.x + point[0], bot.origin.y + point[1], bot.origin.z + point[2]], index * 3));
+	local.forEach((point, index) =>
+	{
+		const world = index < 8
+			? {x: bot.origin.x + point[0], y: bot.origin.y + point[1], z: bot.origin.z + point[2]}
+			: target_world_point(bot, point);
+		values.set([world.x, world.y, world.z], index * 3);
+	});
 	return values;
+}
+
+function seeded_random(seed)
+{
+	let state = (Number(seed) >>> 0) || 0x9e3779b9;
+	return () => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 0x100000000);
 }
 
 function make_bot_brain(bot, index)
@@ -682,8 +746,13 @@ export class FpsSimulation
 		this.playerSpeed = Number(settings.playerSpeed) || 225;
 		this.botSpeed = Number(settings.botSpeed) || 225;
 		this.pingMs = Number(settings.pingMs) || 0;
+		this.tuning = settings.tuning || {};
+		this.heTuning = {heRadius: settings.heRadius, heSeconds: settings.heSeconds};
+		this.heSeconds = Number.isFinite(Number(settings.heSeconds)) ? clamp(Number(settings.heSeconds), 0, 10) : DEFAULT_HE_SECONDS;
+		this.botMuzzleLength = Math.max(0, Number(settings.botMuzzleLength) || 0);
+		this.random = seeded_random(settings.seed);
 		this.debug = false;
-		this.targets = null;
+		this.targetSets = [];
 		this.smokes = [];
 		this.clearances = [];
 		this.smokeCuts = [];
@@ -714,12 +783,16 @@ export class FpsSimulation
 			const angle = this.bots.length * Math.PI * 2 / 3;
 			origin = add(origin, {x: Math.cos(angle) * 1200, y: Math.sin(angle) * 1200, z: 0});
 		}
-		return make_actor({...origin, yaw: Math.random() * 360});
+		return make_actor({...origin, yaw: this.random() * 360});
 	}
 
 	set_input(value) { this.playerButtons = {...value}; }
 	set_look(yaw, pitch) { if (Number.isFinite(yaw)) this.player.yaw = yaw; if (Number.isFinite(pitch)) this.player.pitch = clamp(pitch, -89, 89); }
-	set_targets(values) { if (values instanceof Float32Array && values.length >= 3) this.targets = values; }
+	set_targets(values)
+	{
+		const sets = Array.isArray(values) ? values : [values];
+		this.targetSets = sets.map((value) => value instanceof Float32Array && value.length >= 3 ? value : null);
+	}
 	set_debug(value) { this.debug = Boolean(value); }
 	request_traversal() { this.captureTraversal = true; }
 	set_player_speed(value) { if (Number.isFinite(value) && value > 0) this.playerSpeed = Math.min(value, FPS_CONSTANTS.globalMaxSpeed); }
@@ -774,7 +847,7 @@ export class FpsSimulation
 		const separated = candidates.filter((area) => otherBots.every((other) => length_sq(sub(area.center, other.origin)) >= 1000 ** 2)
 			&& otherGoals.every((goal) => length_sq(sub(area.center, goal)) >= 1000 ** 2));
 		if (separated.length) candidates = separated;
-		const chosen = candidates[Math.floor(Math.random() * candidates.length)] || [...this.nav.areas.values()][Math.floor(Math.random() * this.nav.areas.size)];
+		const chosen = candidates[Math.floor(this.random() * candidates.length)] || [...this.nav.areas.values()][Math.floor(this.random() * this.nav.areas.size)];
 		if (!chosen)
 		{
 			brain.route = [];
@@ -838,7 +911,7 @@ export class FpsSimulation
 				else
 				{
 					brain.mode = "camp";
-					brain.campUntil = this.time + 8 + Math.random() * 10;
+					brain.campUntil = this.time + 8 + this.random() * 10;
 				}
 			}
 		}
@@ -847,7 +920,7 @@ export class FpsSimulation
 			buttons.w = true;
 			const yaw = brain.wanderYaw * Math.PI / 180;
 			const probe = add(bot.origin, {x: Math.cos(yaw) * 96, y: Math.sin(yaw) * 96, z: 36});
-			if (this.map.segment_blocked(add(bot.origin, {x: 0, y: 0, z: 36}), probe).blocked) brain.wanderYaw += 90 + Math.random() * 90;
+			if (this.map.segment_blocked(add(bot.origin, {x: 0, y: 0, z: 36}), probe).blocked) brain.wanderYaw += 90 + this.random() * 90;
 			desiredYaw = brain.wanderYaw;
 		}
 		else
@@ -888,7 +961,7 @@ export class FpsSimulation
 			brain.route = [];
 			brain.routeIndex = 0;
 			brain.nextGoal = 0;
-			brain.wanderYaw += 90 + Math.random() * 90;
+			brain.wanderYaw += 90 + this.random() * 90;
 			brain.jumpOrigin = {...bot.origin};
 			brain.failedJumps = 0;
 		}
@@ -944,20 +1017,22 @@ export class FpsSimulation
 			}
 		}
 		this.smokes = this.smokes.filter((smoke) => this.time - smoke.startTime < 22.5);
-		this.clearances = this.clearances.filter((clearance) => this.time - clearance.time < HE_SECONDS);
+		this.clearances = this.clearances.filter((clearance) => this.time - clearance.time < this.heSeconds);
 		this.smokeCuts = this.smokeCuts.filter((cut) => this.time - cut.time < BULLET_SMOKE_SECONDS);
 	}
 
 	visibility(bot, botIndex, captureTraversal = false)
 	{
-		const targetValues = botIndex === 0 && this.targets || default_targets(bot);
+		const targetValues = this.targetSets[botIndex] || default_targets(bot, this.botMuzzleLength);
 		const targets = [];
 		for (let index = 0; index < targetValues.length; index += 3) targets.push({x: targetValues[index], y: targetValues[index + 1], z: targetValues[index + 2]});
 		const traversal = captureTraversal ? this.map.create_traversal() : null;
 		const origins = runtime_origins(this.map, {
 			origin: this.player.origin,
+			eye: add(this.player.origin, {x: 0, y: 0, z: this.player.crouched ? 28.5 : 64}),
 			yaw: this.player.yaw,
 			pingMs: this.pingMs,
+			tuning: this.tuning,
 			buttons: this.playerButtons
 		}, traversal);
 		const rayCount = origins.length * targets.length;
@@ -972,7 +1047,7 @@ export class FpsSimulation
 			{
 				const wall = this.map.segment_blocked(origin, target, cache[ray], traversal);
 				cache[ray] = wall.packet;
-				blocked[ray] = wall.blocked ? 1 : smoke_line_blocked(this.map, this.smokes, this.clearances, origin, target, this.time, this.smokeCuts) ? 2 : 0;
+				blocked[ray] = wall.blocked ? 1 : smoke_line_blocked(this.map, this.smokes, this.clearances, origin, target, this.time, this.smokeCuts, this.heTuning) ? 2 : 0;
 				clearCount += Number(blocked[ray] === 0);
 				++ray;
 			}

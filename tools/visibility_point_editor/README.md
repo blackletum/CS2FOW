@@ -18,7 +18,7 @@ Choose the standing, walking, running, crouching, jumping, firing, or reloading 
 
 The Map tab loads version 3 baked visibility files (BVH8) directly in a background worker. Local Mirage loads automatically. Ancient and other maps can be selected with **Load BVH8**. Recognized Ancient, Anubis, Inferno, Mirage, Nuke, and Overpass maps start with a default spawn pair; every map still supports click or numeric placement. Toggle the filled collision walls to wireframe when you need to see through the full map.
 
-The worker uses the same baked triangles and wall decisions as the runtime, including the ping-scaled shoulder distance and optional W/A/S/D intention origin. Play adds controlled smoke and HE inputs so you can exercise the runtime density and clearing rules. Smoke spreads only through connected baked-map space, bullets briefly carve narrow channels, and HE clears nearby cells for 2.5 seconds. The browser uses real locally exported CS2 smoke and explosion artwork, but Three.js does not execute Valve's particle engine, so the generated cloud is still a test input rather than a copy of Valve's full smoke simulation. Valve models, navigation, sounds, and particle artwork remain ignored local assets and must not be committed.
+The worker uses the same baked triangles and wall decisions as the runtime, including the ping-scaled shoulder distance and optional W/A/S/D intention origin. The Map tab exposes the plugin's shoulder and HE convar values; their defaults match the shipped configuration. Play adds controlled smoke and HE inputs so you can exercise the runtime density and clearing rules. Smoke spreads only through connected baked-map space, bullets briefly carve narrow channels, and HE clears nearby cells for the configured duration. The browser uses real locally exported CS2 smoke and explosion artwork, but Three.js does not execute Valve's particle engine, so the generated cloud is still a test input rather than a copy of Valve's full smoke simulation. Valve models, navigation, sounds, and particle artwork remain ignored local assets and must not be committed.
 
 ## Play controls
 
@@ -32,11 +32,14 @@ Real mode completely hides the Phoenix and its carried weapon when every runtime
 
 ## Export Local Assets
 
-Install Node.js, Python, and the .NET 10 SDK. The exporter uses pinned glTF Transform tooling through `npx` to retain the complete CS2 world-animation library once, reuse it for SAS and Phoenix, discard unused player textures, and compact the result. Its small .NET helper is pinned to ValveResourceFormat `19.2.6339` and exports the installed maps' navigation graphs. It also exports the local first-person arms, three weapons, and a small set of real weapon, grenade, and footstep sounds.
+Install Node.js, Python, and the .NET 10 SDK. Install the Studio's locked local Three.js and glTF Transform dependencies once, then run the exporter:
 
 ```powershell
+npm ci --prefix tools/visibility_point_editor
 python tools/visibility_point_editor/export_assets.py --game "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo"
 ```
+
+The exporter uses only that installed glTF Transform version to retain the complete CS2 world-animation library once, reuse it for SAS and Phoenix, discard unused player textures, and compact the result. Its small .NET helper is pinned to ValveResourceFormat `19.2.6339` and exports the installed maps' navigation graphs. Independent resources are exported four at a time, while asset and map fingerprints are tracked separately.
 
 This writes ignored files under:
 
@@ -52,6 +55,7 @@ The weapon preview and muzzle point are only for tuning and visual context. Use 
 
 ```powershell
 cd C:\path\to\CS2FOW
+npm ci --prefix tools/visibility_point_editor
 python -m http.server 8765
 ```
 

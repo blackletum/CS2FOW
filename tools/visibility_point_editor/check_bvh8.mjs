@@ -70,9 +70,9 @@ function rejected(change, pattern)
 	assert.throws(() => new Bvh8Map(buffer), pattern);
 }
 
-function surface_fixture(metadata)
+function surface_fixture(metadata, surfaceName = "concrete")
 {
-	const name = new TextEncoder().encode("concrete");
+	const name = new TextEncoder().encode(surfaceName);
 	const lanesOffset = 128 + 2 + name.length;
 	const buffer = new ArrayBuffer(lanesOffset + 16);
 	const bytes = new Uint8Array(buffer);
@@ -96,14 +96,20 @@ function surface_fixture(metadata)
 }
 
 const map = new Bvh8Map(fixture());
+const crcFixture = new TextEncoder().encode("123456789");
+assert.equal(crc32(crcFixture), 0xcbf43926);
+assert.equal(crc32(crcFixture.subarray(4), crc32(crcFixture.subarray(0, 4))), 0xcbf43926);
 assert.equal(map.metadata.mapName, "test_map");
 assert.equal(map.metadata.triangleCount, 1);
 assert.equal(map.triangle_positions(1).length, 9);
+assert.equal(map.triangle_positions_for(new Uint32Array([0]), 1).length, 9);
 assert.equal(map.segment_blocked({x: -1, y: 0, z: 0}, {x: 1, y: 0, z: 0}).blocked, true);
 assert.equal(map.segment_blocked({x: -1, y: 2, z: 0}, {x: 1, y: 2, z: 0}).blocked, false);
 assert.equal(shoulder_offset(0), 48);
 assert.equal(shoulder_offset(200), 128);
+assert.equal(shoulder_offset(200, {shoulderBase: 0, shoulderRttScale: 0, maxShoulder: 0}), 0);
 assert.equal(runtime_origins(map, {origin: {x: -10, y: 0, z: 0}, yaw: 0, pingMs: 0, buttons: {}}).length, 5);
+assert.equal(runtime_origins(map, {origin: {x: -10, y: 0, z: 0}, eyeHeight: 28.5, yaw: 0, pingMs: 0, buttons: {}})[0].z, 28.5);
 assert.equal(runtime_origins(map, {origin: {x: -10, y: 0, z: 0}, yaw: 0, pingMs: 0, buttons: {w: true, a: true}}).length, 6);
 const traced = trace_runtime_rays(map,
 	{origin: {x: -10, y: 0, z: -64}, yaw: 0, pingMs: 0, buttons: {}},
@@ -121,6 +127,8 @@ assert.ok(traversal.boundsTests > 0 && traversal.triangleTests > 0, "traversal w
 const surfaces = new Bvh8SurfaceMap(surface_fixture(map.metadata), map.metadata);
 assert.equal(surfaces.name(0, 0), "concrete");
 assert.equal(surfaces.name(0, 1), "default");
+const oddSurfaces = new Bvh8SurfaceMap(surface_fixture(map.metadata, "odd"), map.metadata);
+assert.equal(oddSurfaces.name(0, 0), "odd", "odd-length surface names must not misalign Uint16 lanes");
 assert.throws(() => {
 	const value = surface_fixture(map.metadata);
 	new Uint8Array(value)[value.byteLength - 1] ^= 1;
