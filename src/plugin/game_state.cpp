@@ -416,7 +416,7 @@ bool plugin::collect_player_visual_group(CGameEntitySystem *system, CEntityInsta
 	return group.count != 0;
 }
 
-bool plugin::capture_animated_body_points(CEntityInstance *pawn, uint32_t slot, player_state &player,
+bool plugin::capture_animated_capsules(CEntityInstance *pawn, uint32_t slot, player_state &player,
 	std::chrono::steady_clock::time_point now)
 {
 	if (pawn == nullptr || slot >= player_bone_cache_.size() || lookup_bone_ == nullptr || get_bone_transform_ == nullptr)
@@ -431,10 +431,10 @@ bool plugin::capture_animated_body_points(CEntityInstance *pawn, uint32_t slot, 
 		cache.retry_after = now + std::chrono::seconds(1);
 		cache.valid = true;
 		const auto lookup = reinterpret_cast<int32_t (*)(void *, const char *)>(lookup_bone_);
-		for (size_t point = 0; point < cache.indices.size(); ++point)
+		for (size_t capsule = 0; capsule < cache.indices.size(); ++capsule)
 		{
-			cache.indices[point] = lookup(pawn, k_visibility_body_bindings[point].bone);
-			if (cache.indices[point] < 0)
+			cache.indices[capsule] = lookup(pawn, k_visibility_capsule_bindings[capsule].bone);
+			if (cache.indices[capsule] < 0)
 			{
 				cache.valid = false;
 			}
@@ -445,37 +445,45 @@ bool plugin::capture_animated_body_points(CEntityInstance *pawn, uint32_t slot, 
 		return false;
 	}
 
-	std::array<vec3, k_visibility_body_point_count> points;
-	constexpr float k_max_body_point_distance_sq = 128.0f * 128.0f;
-	for (size_t point = 0; point < points.size(); ++point)
+	std::array<visibility_capsule, k_visibility_capsule_count> capsules;
+	constexpr float k_max_capsule_endpoint_distance_sq = 128.0f * 128.0f;
+	for (size_t capsule = 0; capsule < capsules.size(); ++capsule)
 	{
 		CTransform transform;
 		const float invalid = std::numeric_limits<float>::quiet_NaN();
 		transform.m_vPosition.Init(invalid, invalid, invalid);
 		transform.m_orientation.Init(invalid, invalid, invalid, invalid);
 #if defined(_WIN32)
-		reinterpret_cast<void (*)(void *, CTransform *, int32_t)>(get_bone_transform_)(pawn, &transform, cache.indices[point]);
+		reinterpret_cast<void (*)(void *, CTransform *, int32_t)>(get_bone_transform_)(pawn, &transform, cache.indices[capsule]);
 #else
-		reinterpret_cast<void (*)(CTransform *, void *, int32_t)>(get_bone_transform_)(&transform, pawn, cache.indices[point]);
+		reinterpret_cast<void (*)(CTransform *, void *, int32_t)>(get_bone_transform_)(&transform, pawn, cache.indices[capsule]);
 #endif
 		const visibility_bone_transform copied {
 			to_vec3(transform.m_vPosition),
 			{transform.m_orientation.x, transform.m_orientation.y, transform.m_orientation.z, transform.m_orientation.w}
 		};
-		if (!visibility_transform_body_point(copied, k_visibility_body_bindings[point].local, points[point]))
+		const visibility_capsule_binding &binding = k_visibility_capsule_bindings[capsule];
+		visibility_capsule &output = capsules[capsule];
+		output.radius = binding.radius;
+		if (!visibility_transform_point(copied, binding.local_start, output.start)
+			|| !visibility_transform_point(copied, binding.local_end, output.end)
+			|| !valid_visibility_capsule(output))
 		{
 			return false;
 		}
-		const float x = points[point].x - player.origin.x;
-		const float y = points[point].y - player.origin.y;
-		const float z = points[point].z - player.origin.z;
-		if (x * x + y * y + z * z > k_max_body_point_distance_sq)
+		for (vec3 endpoint : {output.start, output.end})
 		{
-			return false;
+			const float x = endpoint.x - player.origin.x;
+			const float y = endpoint.y - player.origin.y;
+			const float z = endpoint.z - player.origin.z;
+			if (x * x + y * y + z * z > k_max_capsule_endpoint_distance_sq)
+			{
+				return false;
+			}
 		}
 	}
-	player.body_points = points;
-	player.body_point_count = static_cast<uint32_t>(points.size());
+	player.capsules = capsules;
+	player.capsule_count = static_cast<uint32_t>(capsules.size());
 	return true;
 }
 
@@ -558,8 +566,8 @@ bool plugin::capture(visibility_snapshot &value, float game_time)
 		animated_pawns[slot] = pawn_entity;
 	}
 	const auto bones_started = std::chrono::steady_clock::now();
-	uint32_t animated_players = 0;
-	uint32_t static_fallback_players = 0;
+	uint32_t capsule_players = 0;
+	uint32_t capsule_failed_players = 0;
 	for (uint32_t slot = 0; slot < k_max_players; ++slot)
 	{
 		if (!value.players[slot].valid)
@@ -567,13 +575,13 @@ bool plugin::capture(visibility_snapshot &value, float game_time)
 			player_bone_cache_[slot] = {};
 			continue;
 		}
-		capture_animated_body_points(animated_pawns[slot], slot, value.players[slot], now)
-			? ++animated_players : ++static_fallback_players;
+		capture_animated_capsules(animated_pawns[slot], slot, value.players[slot], now)
+			? ++capsule_players : ++capsule_failed_players;
 	}
 	bone_timing_.record(std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - bones_started).count());
-	animated_players_ = animated_players;
-	static_fallback_players_ = static_fallback_players;
+	capsule_players_ = capsule_players;
+	capsule_failed_players_ = capsule_failed_players;
 	for (uint32_t recipient = 0; recipient < k_max_players; ++recipient)
 	{
 		for (uint32_t target = 0; target < k_max_players; ++target)

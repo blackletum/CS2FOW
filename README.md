@@ -4,7 +4,7 @@
 
 ### Server-side anti-wallhack for Counter-Strike 2 community servers
 
-[![Issues](https://img.shields.io/github/issues/karola3vax/CS2FOW?style=for-the-badge&label=issues)](https://github.com/karola3vax/CS2FOW/issues) [![License](https://img.shields.io/github/license/karola3vax/CS2FOW?style=for-the-badge&label=license)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/karola3vax/CS2FOW?style=for-the-badge&label=issues)](https://github.com/karola3vax/CS2FOW/issues) [![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
 
 <img src="docs/ancient.gif" width="800" alt="CS2FOW hiding players behind solid map geometry on Ancient">
 
@@ -112,7 +112,7 @@ Doors, breakable objects, and moving props do not block CS2FOW yet. The baked ma
 <details>
 <summary><strong>How does it avoid enemies appearing too late around corners?</strong></summary>
 
-CS2FOW checks fifteen points that follow the player's animated bones, the corners of their box, and the muzzle of their held weapon. It also places viewing points at your eye, shoulders, above your eye, and feet. When you hold W or S, or move diagonally, one extra point follows that direction. The shoulder and movement points reach farther at higher ping, stop at baked walls, and a short visibility hold prevents one-tick flicker.
+CS2FOW checks Valve's nineteen animated hitbox capsules as complete three-dimensional volumes, plus the muzzle of the held weapon. It also places viewing points at your eye, shoulders, above your eye, and feet. When you hold W or S, or move diagonally, one extra point follows that direction. The shoulder and movement points reach farther at higher ping, stop at baked walls, and a short visibility hold prevents one-tick flicker.
 
 As soon as the background worker finds a clear view again, CS2FOW lets the player's next normal update through.
 
@@ -176,9 +176,9 @@ Live smoke can block those imaginary sight lines too. By default, an HE opens a 
 
 1. **Load the map:** CS2FOW finds the mounted VPK and the physics data inside it.
 2. **Bake the walls:** the baker turns thousands of collision triangles into a compact, quick-to-search map called a BVH8.
-3. **Take a picture:** on the game thread, CS2FOW asks CS2 for each player's current bones, turns them into fifteen body points, and safely copies those points with the player's position, size, movement buttons, view direction, ping, and held weapon. This recent picture is the snapshot. If the bones are unavailable, the old fixed body points are used instead.
-4. **Draw sight lines:** a background worker tests up to six viewing points against the player's current body, box corners, and weapon muzzle.
-5. **Choose visible or hidden:** if even one line gets past both the baked walls and live smoke, the player stays visible.
+3. **Take a picture:** on the game thread, CS2FOW asks CS2 for each player's current bones and safely copies Valve's nineteen animated hitbox capsules with the player's position, size, movement buttons, view direction, ping, and held weapon. This recent picture is the snapshot. If a complete trustworthy capsule pose is unavailable, that player is shown normally.
+4. **Test the whole body:** a background worker looks from up to six viewing positions and compares the projected three-dimensional capsule silhouette with the baked walls. The held-weapon muzzle remains one separate visibility point.
+5. **Choose visible or hidden:** if any sampled part of any capsule or the muzzle gets past both the baked walls and live smoke, the whole player stays visible. Sub-pixel or time-budget uncertainty also shows the player rather than risking an incorrect hide.
 6. **Control the outgoing update:** `CheckTransmit`, the server's outgoing entity list, first marks the verified `dont_transmit` bit and then removes the matching primary send bit for each hidden visual entity.
 
 The worker gets a copy of the numbers, never live CS2 objects. In other words, it reads a photograph instead of reaching back into the moving game.
@@ -201,7 +201,7 @@ The worker gets a copy of the numbers, never live CS2 objects. In other words, i
 
 The plugin runs `cfg/cs2fow.cfg` when it loads and again whenever a map starts. Out of the box, wall and smoke filtering are on, teammate filtering is off, and Valve's `sv_enable_donttransmit 0` compatibility mode is used. CS2FOW's paired send-list handling also supports mode `1`.
 
-Think of `cs2fow_status` as the dashboard. It tells you whether CS2FOW is active, why it stepped aside, which map bake is loaded, how long its work takes, how fresh the latest snapshot is, how many player pairs it checked, what smoke and HE handling are doing, whether teammates are filtered, and how an automatic bake is going. The separate `bones` line measures the game-thread time spent asking CS2 for animated body points; that time is already included in `capture`, so do not add the two numbers together.
+Think of `cs2fow_status` as the dashboard. It tells you whether CS2FOW is active, why it stepped aside, which map bake is loaded, how long its work takes, how fresh the latest snapshot is, how many player pairs it checked, what smoke and HE handling are doing, whether teammates are filtered, and how an automatic bake is going. The separate `bones` line measures the game-thread time spent asking CS2 for animated hitbox capsules; that time is already included in `capture`, so do not add the two numbers together.
 
 If you need to see exactly which entity bits CS2FOW removed:
 
@@ -274,7 +274,7 @@ When the automatic baker or VRF fails, the error includes the newest 8 KiB of th
 ## Developer and project links
 
 - [Code tour](docs/CODE_TOUR.md): follow the architecture, threads, safety rules, and build and release steps in plain language.
-- [Visibility Studio](tools/visibility_point_editor/README.md): see and tune the body, box, and muzzle points used for sight checks.
+- [Visibility Studio](tools/visibility_point_editor/README.md): compare legacy LOS points with Valve capsules and simulate CS2FOW's maps, movement, smoke, HE, and visibility decisions locally.
 - [CS2FOW Map Baker](https://cs2fow-bake-service.onrender.com/): prepare visibility data from a public Workshop map.
 - [Bake Service source](https://github.com/karola3vax/CS2FOW-Bake-Service): inspect the public baking service itself.
 

@@ -5,6 +5,7 @@
 // CS2 objects. New pending work replaces old pending work instead of queuing.
 
 #include "bvh8.h"
+#include "capsule_visibility.h"
 #include "smoke_occlusion.h"
 #include "visibility_sampling.h"
 
@@ -37,15 +38,15 @@ struct player_state
 	float rtt_seconds {};
 	uint64_t movement_buttons {};
 	weapon_muzzle_class muzzle_class {weapon_muzzle_class::none};
-	std::array<vec3, k_visibility_body_point_count> body_points {};
-	uint32_t body_point_count {};
+	std::array<visibility_capsule, k_visibility_capsule_count> capsules {};
+	uint32_t capsule_count {};
 	int pawn_entity {-1};
 };
 
 inline visibility_player visibility_sample(const player_state &player)
 {
 	return {player.eye, player.origin, player.mins, player.maxs, player.eye_yaw_degrees, player.rtt_seconds,
-		player.movement_buttons, player.muzzle_class, player.body_points, player.body_point_count};
+		player.movement_buttons, player.muzzle_class, player.capsules, player.capsule_count};
 }
 
 inline bool valid_player_numbers(const player_state &player)
@@ -57,8 +58,8 @@ inline bool valid_player_numbers(const player_state &player)
 	return finite(player.origin) && finite(player.eye) && finite(player.mins) && finite(player.maxs)
 		&& std::isfinite(player.eye_yaw_degrees) && std::isfinite(player.rtt_seconds)
 		&& player.mins.x <= player.maxs.x && player.mins.y <= player.maxs.y && player.mins.z <= player.maxs.z
-		&& (player.body_point_count == 0 || (player.body_point_count == player.body_points.size()
-			&& std::all_of(player.body_points.begin(), player.body_points.end(), finite)));
+		&& (player.capsule_count == 0 || (player.capsule_count == player.capsules.size()
+			&& std::all_of(player.capsules.begin(), player.capsules.end(), valid_visibility_capsule)));
 }
 
 inline bool visibility_pair_enabled(uint32_t recipient, uint32_t target, const player_state &from,
@@ -99,6 +100,11 @@ struct visibility_result
 	uint32_t evaluated_pairs {};
 	uint32_t visible_pairs {};
 	uint32_t hidden_pairs {};
+	uint32_t sampled_pixels {};
+	uint32_t traced_rays {};
+	uint32_t visited_nodes {};
+	uint32_t rasterized_triangles {};
+	bool budget_exhausted {};
 };
 
 inline bool visibility_snapshot_fresh(std::chrono::steady_clock::time_point captured,
@@ -116,6 +122,11 @@ struct worker_stats
 	uint32_t evaluated_pairs {};
 	uint32_t visible_pairs {};
 	uint32_t hidden_pairs {};
+	uint32_t sampled_pixels {};
+	uint32_t traced_rays {};
+	uint32_t visited_nodes {};
+	uint32_t rasterized_triangles {};
+	uint64_t budget_exhaustions {};
 };
 
 class visibility_worker
@@ -140,7 +151,7 @@ private:
 	visibility_tuning tuning_;
 	std::thread thread_;
 	std::shared_ptr<const visibility_result> published_;
-	std::array<std::array<std::array<uint32_t, k_visibility_ray_count_max>, k_max_players>, k_max_players> cached_packets_ {};
+	std::array<std::array<std::array<uint32_t, k_visibility_origin_count_max>, k_max_players>, k_max_players> cached_packets_ {};
 	std::array<std::array<std::chrono::steady_clock::time_point, k_max_players>, k_max_players> revealed_until_ {};
 	mutable std::mutex stats_mutex_;
 	worker_stats stats_;

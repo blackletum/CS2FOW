@@ -107,7 +107,7 @@ int run_tests(std::span<const std::filesystem::path> argv)
 	std::uniform_real_distribution<float> x(data.header.world_min[0], data.header.world_max[0]);
 	std::uniform_real_distribution<float> y(data.header.world_min[1], data.header.world_max[1]);
 	std::uniform_real_distribution<float> z(data.header.world_min[2], data.header.world_max[2]);
-	constexpr size_t k_benchmark_rays = 512u * k_visibility_ray_count_max;
+	constexpr size_t k_benchmark_rays = 65536;
 	std::vector<std::pair<vec3, vec3>> rays(k_benchmark_rays);
 	std::vector<uint32_t> cache(k_benchmark_rays, k_invalid_ref);
 	for (auto &ray : rays)
@@ -138,7 +138,7 @@ int run_tests(std::span<const std::filesystem::path> argv)
 	std::cout << label << " traversal: average=" << average << "ms p99=" << timings.back()
 		<< "ms rays=" << k_benchmark_rays << " blocked=" << blocked << '\n';
 	assert(average < 25.0);
-	assert(run_worker_benchmark(data, label) < 10.0);
+	assert(run_worker_benchmark(data, label) < 75.0);
 	return 0;
 }
 

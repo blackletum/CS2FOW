@@ -126,7 +126,7 @@ struct target_transmit_cache
 struct player_bone_cache
 {
 	CEntityInstance *pawn {};
-	std::array<int32_t, k_visibility_body_point_count> indices {};
+	std::array<int32_t, k_visibility_capsule_count> indices {};
 	std::chrono::steady_clock::time_point retry_after {};
 	bool valid {};
 };
@@ -236,7 +236,7 @@ private:
 	void record_hidden_entity(CGameEntitySystem *system, size_t member_index, int edict, const visual_entity_group &group,
 		int recipient_slot, hide_reason reason, std::chrono::steady_clock::time_point now);
 	bool capture(visibility_snapshot &value, float game_time);
-	bool capture_animated_body_points(CEntityInstance *pawn, uint32_t slot, player_state &player,
+	bool capture_animated_capsules(CEntityInstance *pawn, uint32_t slot, player_state &player,
 		std::chrono::steady_clock::time_point now);
 	bool capture_smokes(const std::array<CEntityInstance *, k_max_smoke_volumes> &entities, size_t count,
 		bool overflow, float game_time, visibility_snapshot &value);
@@ -296,11 +296,11 @@ private:
 	runtime_timing_stats capture_timing_;
 	runtime_timing_stats bone_timing_;
 	runtime_timing_stats transmit_timing_;
-	uint32_t animated_players_ {};
-	uint32_t static_fallback_players_ {};
+	uint32_t capsule_players_ {};
+	uint32_t capsule_failed_players_ {};
 	std::chrono::steady_clock::time_point last_snapshot_ {};
 	std::chrono::steady_clock::time_point last_los_debug_draw_ {};
-	std::array<los_debug_beam, k_visibility_target_count_max> los_debug_beams_;
+	std::array<los_debug_beam, k_visibility_debug_beam_count_max> los_debug_beams_;
 	bool los_debug_failed_ {};
 	uint64_t snapshot_sequence_ {};
 	bool prerequisites_valid_ {};

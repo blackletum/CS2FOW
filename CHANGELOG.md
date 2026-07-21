@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7-preview
+
+- Replaced the fifteen hand-tuned runtime LOS dots and eight AABB corners with Valve's nineteen live animated hitbox capsules. Visibility now evaluates the capsule silhouette through a bounded CPU depth buffer, preserves the muzzle/smoke/HE rules, and fails open on invalid capture, uncertainty, or a 75 ms worker budget.
+
 ## 0.2.6-preview
 
 - Removed the private CS2 debug-overlay calls that could corrupt the client HUD and spam missing-texture errors.

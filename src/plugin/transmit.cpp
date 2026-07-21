@@ -139,8 +139,8 @@ void plugin::reset_transmit_state(bool clear_debug_records)
 	capture_timing_ = {};
 	bone_timing_ = {};
 	transmit_timing_ = {};
-	animated_players_ = 0;
-	static_fallback_players_ = 0;
+	capsule_players_ = 0;
+	capsule_failed_players_ = 0;
 	if (clear_debug_records)
 	{
 		recent_hides_.clear();

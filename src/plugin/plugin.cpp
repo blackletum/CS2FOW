@@ -93,9 +93,7 @@ using dispatch_spawn_fn = void (*)(CEntityInstance *, void *);
 using remove_entity_fn = void (*)(CEntityInstance *);
 using teleport_entity_fn = void (*)(CEntityInstance *, const Vector *, const QAngle *, const Vector *);
 
-constexpr uint32_t k_los_aabb_color = 0xffa500;
 constexpr uint32_t k_los_animated_color = 0x00ff00;
-constexpr uint32_t k_los_fallback_color = 0xff0000;
 constexpr uint32_t k_los_muzzle_color = 0x00ffff;
 constexpr float k_los_beam_half_length = 1.0f;
 constexpr auto k_los_debug_interval = std::chrono::microseconds(15625);
@@ -153,7 +151,7 @@ CConVar<float> cs2fow_max_shoulder_units("cs2fow_max_shoulder_units", FCVAR_NONE
 CConVar<int> cs2fow_visibility_hold_ms("cs2fow_visibility_hold_ms", FCVAR_NONE, "Minimum revealed duration", 16, true, 0, true, 1000);
 CConVar<bool> cs2fow_debug("cs2fow_debug", FCVAR_NONE, "Enable CS2FOW diagnostic logging", false);
 CConVar<int> cs2fow_debug_los_player("cs2fow_debug_los_player", FCVAR_NONE,
-	"Temporarily draw one 1-based player's live LOS samples; 0 removes them", 0, true, 0, true, static_cast<int>(k_max_players));
+	"Temporarily draw one 1-based player's live capsule axes and muzzle; 0 removes them", 0, true, 0, true, static_cast<int>(k_max_players));
 
 CON_COMMAND_F(cs2fow_status, "Report CS2FOW state", FCVAR_NONE)
 {
@@ -810,8 +808,11 @@ void plugin::draw_los_debug(const visibility_snapshot &value)
 	}
 
 	last_los_debug_draw_ = value.captured;
-	const visibility_target_points targets = visibility_targets(visibility_sample(player));
-	const uint32_t body_end = k_visibility_aabb_point_count + k_visibility_body_point_count;
+	const uint32_t capsule_count = player.capsule_count == k_visibility_capsule_count
+		? player.capsule_count : 0u;
+	vec3 muzzle;
+	const bool has_muzzle = visibility_muzzle_point(visibility_sample(player), muzzle);
+	const uint32_t debug_count = capsule_count + static_cast<uint32_t>(has_muzzle);
 	auto create_entity = reinterpret_cast<create_entity_by_name_fn>(create_entity_by_name_);
 	auto dispatch_spawn = reinterpret_cast<dispatch_spawn_fn>(dispatch_spawn_);
 	auto remove_entity = reinterpret_cast<remove_entity_fn>(remove_entity_);
@@ -819,19 +820,21 @@ void plugin::draw_los_debug(const visibility_snapshot &value)
 	{
 		los_debug_beam &beam = los_debug_beams_[index];
 		CEntityInstance *entity = beam.handle.IsValid() ? system->GetEntityInstance(beam.handle) : nullptr;
-		if (index >= targets.count)
+		if (index >= debug_count)
 		{
 			if (entity != nullptr) remove_entity(entity);
 			beam = {};
 			continue;
 		}
 
-		const uint32_t color = index < k_visibility_aabb_point_count ? k_los_aabb_color
-			: index < body_end ? (player.body_point_count == k_visibility_body_point_count
-				? k_los_animated_color : k_los_fallback_color)
-			: k_los_muzzle_color;
-		Vector start(targets.points[index].x, targets.points[index].y, targets.points[index].z - k_los_beam_half_length);
-		Vector end(targets.points[index].x, targets.points[index].y, targets.points[index].z + k_los_beam_half_length);
+		const bool capsule_axis = index < capsule_count;
+		const uint32_t color = capsule_axis ? k_los_animated_color : k_los_muzzle_color;
+		const vec3 start_point = capsule_axis ? player.capsules[index].start
+			: vec3 {muzzle.x, muzzle.y, muzzle.z - k_los_beam_half_length};
+		const vec3 end_point = capsule_axis ? player.capsules[index].end
+			: vec3 {muzzle.x, muzzle.y, muzzle.z + k_los_beam_half_length};
+		Vector start(start_point.x, start_point.y, start_point.z);
+		Vector end(end_point.x, end_point.y, end_point.z);
 		if (entity == nullptr)
 		{
 			entity = create_entity("env_beam", -1);
@@ -905,30 +908,32 @@ void plugin::print_status() const
 	runtime_timing_stats capture_timing;
 	runtime_timing_stats bone_timing;
 	runtime_timing_stats transmit_timing;
-	uint32_t animated_players = 0;
-	uint32_t static_fallback_players = 0;
+	uint32_t capsule_players = 0;
+	uint32_t capsule_failed_players = 0;
 	{
 		std::lock_guard<std::mutex> lock(transmit_state_mutex_);
 		capture_timing = capture_timing_;
 		bone_timing = bone_timing_;
 		transmit_timing = transmit_timing_;
-		animated_players = animated_players_;
-		static_fallback_players = static_fallback_players_;
+		capsule_players = capsule_players_;
+		capsule_failed_players = capsule_failed_players_;
 	}
 	const double age_ms = result ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - result->captured).count() : -1.0;
 	META_CONPRINTF("[CS2FOW] %s; map=%s crc=0x%08x version=%u triangles=%u nodes=%u packets=%u bytes=%llu depth=%u\n",
 		disabled_reason_.empty() && cs2fow_enable.Get() ? "active" : (disabled_reason_.empty() ? "disabled by convar" : disabled_reason_.c_str()), map_.c_str(),
 		data_.header.source_crc32, data_.header.version, data_.header.triangle_count, data_.header.node_count, data_.header.packet_count,
 		static_cast<unsigned long long>(data_.header.file_size), data_.header.max_depth);
-	META_CONPRINTF("[CS2FOW] worker latest=%.3fms average=%.3fms maximum=%.3fms snapshot_age=%.1fms pairs=%u visible=%u hidden=%u cycles=%llu\n",
+	META_CONPRINTF("[CS2FOW] worker latest=%.3fms average=%.3fms maximum=%.3fms snapshot_age=%.1fms pairs=%u visible=%u hidden=%u pixels=%u rays=%u nodes=%u triangles=%u budget=%llu cycles=%llu\n",
 		stats.latest_ms, stats.average_ms, stats.maximum_ms, age_ms, stats.evaluated_pairs, stats.visible_pairs, stats.hidden_pairs,
+		stats.sampled_pixels, stats.traced_rays, stats.visited_nodes, stats.rasterized_triangles,
+		static_cast<unsigned long long>(stats.budget_exhaustions),
 		static_cast<unsigned long long>(stats.cycles));
 	META_CONPRINTF("[CS2FOW] capture latest=%.3fms average=%.3fms maximum=%.3fms calls=%llu\n",
 		capture_timing.latest_ms, capture_timing.average_ms(), capture_timing.maximum_ms,
 		static_cast<unsigned long long>(capture_timing.calls));
-	META_CONPRINTF("[CS2FOW] bones latest=%.3fms average=%.3fms maximum=%.3fms calls=%llu animated=%u fallback=%u\n",
+	META_CONPRINTF("[CS2FOW] bones latest=%.3fms average=%.3fms maximum=%.3fms calls=%llu capsules=%u failed=%u\n",
 		bone_timing.latest_ms, bone_timing.average_ms(), bone_timing.maximum_ms,
-		static_cast<unsigned long long>(bone_timing.calls), animated_players, static_fallback_players);
+		static_cast<unsigned long long>(bone_timing.calls), capsule_players, capsule_failed_players);
 	META_CONPRINTF("[CS2FOW] transmit latest=%.3fms average=%.3fms maximum=%.3fms calls=%llu\n",
 		transmit_timing.latest_ms, transmit_timing.average_ms(), transmit_timing.maximum_ms,
 		static_cast<unsigned long long>(transmit_timing.calls));
