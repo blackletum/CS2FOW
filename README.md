@@ -148,6 +148,8 @@ It means CS2FOW would rather show too much than hide the wrong player. If someth
 
 ## Quickstart
 
+<!-- Keep compiled-package URLs out of this README. Publish binaries only as GitHub Release assets. -->
+
 1. Install [Metamod:Source](https://www.sourcemm.net/) on your CS2 server.
 2. Install the Windows or Linux CS2FOW package into your server's `game/csgo` folder without rearranging its contents.
 3. Start your server and load a map.
@@ -201,7 +203,7 @@ The worker gets a copy of the numbers, never live CS2 objects. In other words, i
 
 The plugin runs `cfg/cs2fow.cfg` when it loads and again whenever a map starts. Out of the box, wall and smoke filtering are on, teammate filtering is off, and Valve's `sv_enable_donttransmit 0` compatibility mode is used. CS2FOW's paired send-list handling also supports mode `1`.
 
-Think of `cs2fow_status` as the dashboard. It tells you whether CS2FOW is active, why it stepped aside, which map bake is loaded, how long its work takes, how fresh the latest snapshot is, how many player pairs it checked, what smoke and HE handling are doing, whether teammates are filtered, and how an automatic bake is going. The separate `bones` line measures the game-thread time spent asking CS2 for animated hitbox capsules; that time is already included in `capture`, so do not add the two numbers together.
+Think of `cs2fow_status` as the dashboard. It tells you whether CS2FOW is active, why it stepped aside, which map bake is loaded, how long its work takes, how fresh the latest snapshot is, how many player pairs it checked, what smoke and HE handling are doing, whether teammates are filtered, and how an automatic bake is going. Worker `wall` is the real elapsed latency; `active` adds the pair-processing time across every worker, so it can be higher when several threads run together and is not a direct game-thread stall. The separate `bones` line measures the game-thread time spent asking CS2 for animated hitbox capsules; that time is already included in `capture`, so do not add the two numbers together.
 
 If you need to see exactly which entity bits CS2FOW removed:
 
@@ -226,6 +228,7 @@ The debug buffer records only primary bits CS2FOW truly removed. Turning debug o
 | `cs2fow_he_clear_seconds` | `2.5` | Set how long an HE-opened viewing channel lasts. Use `0` to turn HE clearing off. |
 | `cs2fow_filter_teammates` | `0` | Give living teammates the same visibility checks as enemies. FFA mode is detected automatically. |
 | `cs2fow_update_interval_ms` | `1` | Wait at least this many milliseconds before sending another picture of the players to the worker. |
+| `cs2fow_worker_threads` | `2` | Visibility worker threads, from 1 to 4. Changes apply on the next map activation. |
 | `cs2fow_shoulder_base_units` | `48` | Start the left/right shoulder and movement-intention points this far from the player's eye. |
 | `cs2fow_shoulder_rtt_scale` | `0.4` | Add this many units per millisecond of round-trip ping, updated in 25 ms steps. |
 | `cs2fow_max_shoulder_units` | `128` | Never push those ping-scaled viewing points farther out than this. |

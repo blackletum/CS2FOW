@@ -20,6 +20,7 @@ constexpr float k_epsilon = 1.0e-5f;
 constexpr float k_near_depth = 0.125f;
 constexpr float k_view_margin = 1.02f;
 constexpr float k_depth_epsilon = 1.0e-5f;
+constexpr size_t k_moc_scratch_vertices = k_capsule_occluder_cache_size * 8u * 3u;
 
 struct camera_view
 {
@@ -79,8 +80,10 @@ struct occlusion_scratch
 {
 	std::unique_ptr<MaskedOcclusionCulling, moc_deleter> moc {
 		MaskedOcclusionCulling::Create(MaskedOcclusionCulling::SSE41)};
-	std::vector<float> vertices;
-	std::vector<unsigned int> indices;
+	std::array<float, k_moc_scratch_vertices * 4u> vertices {};
+	std::array<unsigned int, k_moc_scratch_vertices> indices {};
+	uint32_t vertex_count {};
+	uint32_t index_count {};
 	std::vector<traversal_entry> traversal;
 	std::array<float, k_visibility_pixel_count> pixel_depth {};
 
@@ -282,6 +285,8 @@ bool box_intersects_view(const camera_view &view, bounds box, float &near_depth)
 bool append_clip_triangle(occlusion_scratch &scratch, const camera_view &view,
 	vec3 first, vec3 second, vec3 third)
 {
+	if (scratch.vertex_count + 3u > k_moc_scratch_vertices
+		|| scratch.index_count + 3u > scratch.indices.size()) return false;
 	for (vec3 point : {first, second, third})
 	{
 		const camera_vertex camera = to_camera(view, point);
@@ -291,11 +296,12 @@ bool append_clip_triangle(occlusion_scratch &scratch, const camera_view &view,
 		{
 			return false;
 		}
-		scratch.indices.push_back(static_cast<unsigned int>(scratch.vertices.size() / 4u));
-		scratch.vertices.push_back(x);
-		scratch.vertices.push_back(y);
-		scratch.vertices.push_back(0.0f);
-		scratch.vertices.push_back(camera.depth);
+		scratch.indices[scratch.index_count++] = scratch.vertex_count;
+		const uint32_t vertex_offset = scratch.vertex_count++ * 4u;
+		scratch.vertices[vertex_offset] = x;
+		scratch.vertices[vertex_offset + 1u] = y;
+		scratch.vertices[vertex_offset + 2u] = 0.0f;
+		scratch.vertices[vertex_offset + 3u] = camera.depth;
 	}
 	return true;
 }
@@ -330,6 +336,7 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 	{
 		if (targets.empty()) return false;
 		constexpr float margin = 1.0e-4f;
+		if (stats != nullptr) ++stats->moc_rect_tests;
 		if (scratch.moc->TestRect(combined_target.minimum_x - margin, combined_target.minimum_y - margin,
 			combined_target.maximum_x + margin, combined_target.maximum_y + margin,
 			combined_target.minimum_depth * (1.0f - margin)) == MaskedOcclusionCulling::OCCLUDED)
@@ -338,6 +345,7 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 		}
 		for (const projected_bounds &target : targets)
 		{
+			if (stats != nullptr) ++stats->moc_rect_tests;
 			if (scratch.moc->TestRect(target.minimum_x - margin, target.minimum_y - margin,
 				target.maximum_x + margin, target.maximum_y + margin,
 				target.minimum_depth * (1.0f - margin)) != MaskedOcclusionCulling::OCCLUDED)
@@ -364,18 +372,52 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 	};
 	const auto render_leaves = [&]
 	{
-		if (scratch.indices.empty()) return;
-		const int triangles = static_cast<int>(scratch.indices.size() / 3u);
+		if (scratch.index_count == 0) return;
+		const int triangles = static_cast<int>(scratch.index_count / 3u);
 		scratch.moc->RenderTriangles(scratch.vertices.data(), scratch.indices.data(), triangles, nullptr,
 			MaskedOcclusionCulling::BACKFACE_NONE, MaskedOcclusionCulling::CLIP_PLANE_ALL);
-		if (stats != nullptr) stats->rasterized_triangles += static_cast<uint32_t>(triangles);
-		scratch.vertices.clear();
-		scratch.indices.clear();
+		if (stats != nullptr)
+		{
+			++stats->moc_render_calls;
+			stats->rasterized_triangles += static_cast<uint32_t>(triangles);
+		}
+		scratch.vertex_count = 0;
+		scratch.index_count = 0;
+	};
+	const auto compact_cache = [&](capsule_occluder_cache &candidate)
+	{
+		const uint32_t original_count = candidate.count;
+		for (uint32_t suffix_count = 1u; suffix_count < original_count; suffix_count *= 2u)
+		{
+			if (interrupted()) return;
+			scratch.moc->ClearBuffer();
+			scratch.vertex_count = 0;
+			scratch.index_count = 0;
+			const uint32_t first = original_count - suffix_count;
+			for (uint32_t index = first; index < original_count; ++index)
+			{
+				if (!append_leaf(candidate.leaves[index])) return;
+			}
+			render_leaves();
+			if (stats != nullptr) ++stats->cache_compaction_trials;
+			if (!all_targets_occluded()) continue;
+			for (uint32_t index = 0; index < suffix_count; ++index)
+			{
+				candidate.leaves[index] = candidate.leaves[first + index];
+			}
+			candidate.count = suffix_count;
+			if (stats != nullptr)
+			{
+				++stats->cache_compactions;
+				stats->cache_compaction_leaves_saved += original_count - suffix_count;
+			}
+			return;
+		}
 	};
 
 	scratch.moc->ClearBuffer();
-	scratch.vertices.clear();
-	scratch.indices.clear();
+	scratch.vertex_count = 0;
+	scratch.index_count = 0;
 	if (occluder_cache != nullptr && occluder_cache->count != 0)
 	{
 		for (uint32_t index = 0; index < occluder_cache->count; ++index)
@@ -388,7 +430,12 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 		}
 		render_leaves();
 		if (interrupted()) return map_render_result::failed;
-		if (all_targets_occluded()) return map_render_result::target_occluded;
+		if (all_targets_occluded())
+		{
+			if (stats != nullptr) ++stats->occluder_cache_hits;
+			return map_render_result::target_occluded;
+		}
+		if (stats != nullptr) ++stats->occluder_cache_misses;
 		scratch.moc->ClearBuffer();
 	}
 
@@ -400,6 +447,7 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 		return left.near_depth > right.near_depth;
 	};
 	uint32_t checked_nodes = 0;
+	uint32_t traversed_leaves = 0;
 	while (!scratch.traversal.empty())
 	{
 		if ((checked_nodes++ & 63u) == 0u
@@ -412,6 +460,7 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 		scratch.traversal.pop_back();
 		if (is_leaf_ref(entry.ref))
 		{
+			++traversed_leaves;
 			if (!append_leaf(entry.ref)) return map_render_result::failed;
 			render_leaves();
 			if (candidate_cache.count < candidate_cache.leaves.size())
@@ -420,6 +469,18 @@ map_render_result render_map_moc(const bvh8_data &geometry, const camera_view &v
 			}
 			if (all_targets_occluded())
 			{
+				if (stats != nullptr)
+				{
+					++stats->rebuilt_proofs;
+					stats->rebuilt_proof_leaves += traversed_leaves;
+					stats->max_rebuilt_proof_leaves = std::max(
+						stats->max_rebuilt_proof_leaves, traversed_leaves);
+					if (traversed_leaves > k_capsule_occluder_cache_size) ++stats->cache_saturations;
+				}
+				if (traversed_leaves <= k_capsule_occluder_cache_size && candidate_cache.count > 1u)
+				{
+					compact_cache(candidate_cache);
+				}
 				if (occluder_cache != nullptr) *occluder_cache = candidate_cache;
 				return map_render_result::target_occluded;
 			}
@@ -494,7 +555,8 @@ bool append_capsule_mesh(occlusion_scratch &scratch, const camera_view &view,
 	points[output] = add(capsule.end, scale(axis, radius));
 	const uint32_t top_pole = vertex_count - 1u;
 	const auto ring_start = [&](uint32_t ring) { return 1u + ring * sides; };
-	const unsigned int first_vertex = static_cast<unsigned int>(scratch.vertices.size() / 4u);
+	if (scratch.vertex_count + points.size() > k_moc_scratch_vertices) return false;
+	const unsigned int first_vertex = scratch.vertex_count;
 	for (vec3 point : points)
 	{
 		const camera_vertex camera = to_camera(view, point);
@@ -504,16 +566,18 @@ bool append_capsule_mesh(occlusion_scratch &scratch, const camera_view &view,
 		{
 			return false;
 		}
-		scratch.vertices.push_back(x);
-		scratch.vertices.push_back(y);
-		scratch.vertices.push_back(0.0f);
-		scratch.vertices.push_back(camera.depth);
+		const uint32_t vertex_offset = scratch.vertex_count++ * 4u;
+		scratch.vertices[vertex_offset] = x;
+		scratch.vertices[vertex_offset + 1u] = y;
+		scratch.vertices[vertex_offset + 2u] = 0.0f;
+		scratch.vertices[vertex_offset + 3u] = camera.depth;
 	}
 	const auto add_triangle = [&](uint32_t a, uint32_t b, uint32_t c)
 	{
-		scratch.indices.push_back(first_vertex + a);
-		scratch.indices.push_back(first_vertex + b);
-		scratch.indices.push_back(first_vertex + c);
+		if (scratch.index_count + 3u > scratch.indices.size()) return false;
+		scratch.indices[scratch.index_count++] = first_vertex + a;
+		scratch.indices[scratch.index_count++] = first_vertex + b;
+		scratch.indices[scratch.index_count++] = first_vertex + c;
 		return true;
 	};
 	for (uint32_t lane = 0; lane < sides; ++lane)
@@ -536,11 +600,11 @@ bool append_capsule_mesh(occlusion_scratch &scratch, const camera_view &view,
 MaskedOcclusionCulling::CullingResult test_capsule_moc(occlusion_scratch &scratch,
 	const camera_view &view, const visibility_capsule &capsule)
 {
-	scratch.vertices.clear();
-	scratch.indices.clear();
+	scratch.vertex_count = 0;
+	scratch.index_count = 0;
 	if (!append_capsule_mesh(scratch, view, capsule)) return MaskedOcclusionCulling::VIEW_CULLED;
 	return scratch.moc->TestTriangles(scratch.vertices.data(),
-		scratch.indices.data(), static_cast<int>(scratch.indices.size() / 3u), nullptr,
+		scratch.indices.data(), static_cast<int>(scratch.index_count / 3u), nullptr,
 		MaskedOcclusionCulling::BACKFACE_NONE, MaskedOcclusionCulling::CLIP_PLANE_ALL);
 }
 
@@ -657,6 +721,7 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 		{
 			const projected_bounds &capsule_projection = projected[index];
 			constexpr float conservative_margin = 1.0e-4f;
+			if (stats != nullptr) ++stats->moc_rect_tests;
 			if (scratch.moc->TestRect(capsule_projection.minimum_x - conservative_margin,
 				capsule_projection.minimum_y - conservative_margin,
 				capsule_projection.maximum_x + conservative_margin,
@@ -670,6 +735,7 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 			if (capsule_result == MaskedOcclusionCulling::VISIBLE) return capsule_query_result::visible;
 			if (capsule_result != MaskedOcclusionCulling::OCCLUDED) return capsule_query_result::indeterminate;
 		}
+		if (stats != nullptr) ++stats->uncached_blocked;
 		return capsule_query_result::blocked;
 	}
 	scratch.moc->ComputePixelDepthBuffer(scratch.pixel_depth.data(), false);
@@ -683,6 +749,7 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 		// The projected AABB contains the capsule. If even this larger, slightly
 		// nearer rectangle is hidden, the capsule is proven hidden without sampling.
 		constexpr float conservative_margin = 1.0e-4f;
+		if (stats != nullptr) ++stats->moc_rect_tests;
 		const auto coarse = scratch.moc->TestRect(capsule_projection.minimum_x - conservative_margin,
 			capsule_projection.minimum_y - conservative_margin, capsule_projection.maximum_x + conservative_margin,
 			capsule_projection.maximum_y + conservative_margin,
@@ -722,7 +789,11 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 			}
 		}
 	}
-	if (geometry_visible_sample) return capsule_query_result::blocked;
+	if (geometry_visible_sample)
+	{
+		if (stats != nullptr) ++stats->uncached_blocked;
+		return capsule_query_result::blocked;
+	}
 
 	// Pixel centers can miss a sub-pixel opening. The conservative outer capsule
 	// mesh is the final proof: uncertainty reveals rather than hiding a visible player.
@@ -734,6 +805,7 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 		}
 		const projected_bounds &capsule_projection = projected[index];
 		constexpr float conservative_margin = 1.0e-4f;
+		if (stats != nullptr) ++stats->moc_rect_tests;
 		if (scratch.moc->TestRect(capsule_projection.minimum_x - conservative_margin,
 			capsule_projection.minimum_y - conservative_margin, capsule_projection.maximum_x + conservative_margin,
 			capsule_projection.maximum_y + conservative_margin,
@@ -747,6 +819,7 @@ capsule_query_result capsule_visible_from_origin(const bvh8_data &geometry, vec3
 			return capsule_query_result::indeterminate;
 		}
 	}
+	if (stats != nullptr) ++stats->uncached_blocked;
 	return capsule_query_result::blocked;
 }
 

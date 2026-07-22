@@ -25,10 +25,21 @@ struct capsule_query_stats
 	uint32_t traced_rays {};
 	uint32_t visited_nodes {};
 	uint32_t rasterized_triangles {};
+	uint32_t occluder_cache_hits {};
+	uint32_t occluder_cache_misses {};
+	uint32_t moc_render_calls {};
+	uint32_t moc_rect_tests {};
+	uint32_t rebuilt_proofs {};
+	uint32_t rebuilt_proof_leaves {};
+	uint32_t max_rebuilt_proof_leaves {};
+	uint32_t cache_saturations {};
+	uint32_t cache_compaction_trials {};
+	uint32_t cache_compactions {};
+	uint32_t cache_compaction_leaves_saved {};
+	uint32_t uncached_blocked {};
 };
 
-// ponytail: eight nearby leaves cover ordinary walls; a miss safely falls back to the full BVH.
-inline constexpr uint32_t k_capsule_occluder_cache_size = 8;
+inline constexpr uint32_t k_capsule_occluder_cache_size = 96;
 
 struct capsule_occluder_cache
 {

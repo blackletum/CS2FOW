@@ -438,10 +438,27 @@ void test_capsule_visibility()
 		nullptr, &cold_stats, &cache)
 		== capsule_query_result::blocked);
 	assert(cache.count != 0 && cold_stats.visited_nodes != 0);
+	assert(cold_stats.moc_render_calls != 0 && cold_stats.moc_rect_tests != 0);
+	assert(cold_stats.rebuilt_proofs == 1 && cold_stats.rebuilt_proof_leaves != 0);
+	assert(cold_stats.max_rebuilt_proof_leaves == cold_stats.rebuilt_proof_leaves);
+	assert(cold_stats.cache_saturations == 0 && cold_stats.uncached_blocked == 0);
 	capsule_query_stats warm_stats;
 	assert(capsule_visible_from_origin(wall, viewer, target.capsules, nullptr, 0.0f, deadline,
 		nullptr, &warm_stats, &cache) == capsule_query_result::blocked);
 	assert(warm_stats.visited_nodes == 0 && warm_stats.rasterized_triangles <= cold_stats.rasterized_triangles);
+	assert(warm_stats.moc_render_calls != 0 && warm_stats.moc_rect_tests != 0);
+	assert(warm_stats.rebuilt_proofs == 0 && warm_stats.occluder_cache_hits == 1);
+	std::vector<triangle> compact_triangles(8,
+		{{16, -1, 31}, {16, 1, 31}, {16, 0, 33}});
+	compact_triangles.push_back({{32, -100, -100}, {32, 100, -100}, {32, -100, 100}});
+	compact_triangles.push_back({{32, 100, 100}, {32, -100, 100}, {32, 100, -100}});
+	const bvh8_data compact_wall = test_world(compact_triangles);
+	capsule_occluder_cache compact_cache;
+	capsule_query_stats compact_stats;
+	assert(capsule_visible_from_origin(compact_wall, viewer, target.capsules, nullptr, 0.0f, deadline,
+		nullptr, &compact_stats, &compact_cache) == capsule_query_result::blocked);
+	assert(compact_stats.cache_compaction_trials == 1 && compact_stats.cache_compactions == 1);
+	assert(compact_stats.cache_compaction_leaves_saved == 1 && compact_cache.count == 1);
 	target.origin.x = 16.0f;
 	set_test_capsules(target);
 	assert(capsule_visible_from_origin(wall, viewer, target.capsules, nullptr, 0.0f, deadline,
@@ -484,8 +501,8 @@ void test_visibility_worker()
 	const visibility_tuning tuning {48.0f, 0.4f, 128.0f};
 
 	auto worker = std::make_unique<visibility_worker>();
-	assert(worker->start(&wall));
-	assert(worker->stats().cycles == 0);
+	assert(worker->start(&wall, 2));
+	assert(worker->stats().cycles == 0 && worker->stats().thread_count == 2);
 	const auto wait_for = [&](uint64_t sequence)
 	{
 		std::shared_ptr<const visibility_result> result;
@@ -514,7 +531,7 @@ void test_visibility_worker()
 	set_test_capsules(value.players[1]);
 	worker->submit(value, 100, tuning);
 	result = wait_for(3);
-	assert(result && result->visible[0][1]);
+	assert(result && result->visible[0][1] && result->hold_reuses != 0);
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(120));
 	value.sequence = 4;
@@ -533,12 +550,23 @@ void test_visibility_worker()
 	result = wait_for(6);
 	assert(result && !result->visible[0][1] && result->evaluated_pairs == 2 && result->filter_teammates);
 	assert(worker->stats().cycles == 6);
-	assert(worker->start(&wall));
-	assert(worker->stats().cycles == 0);
+	assert(worker->start(&wall, 4));
+	assert(worker->stats().cycles == 0 && worker->stats().thread_count == 4);
+	for (uint64_t sequence = 100; sequence < 164; ++sequence)
+	{
+		const bool open_side = (sequence & 1u) == 0u;
+		value.sequence = sequence;
+		value.players[1].eye.x = open_side ? 16.0f : 64.0f;
+		value.players[1].origin.x = open_side ? 16.0f : 64.0f;
+		set_test_capsules(value.players[1]);
+		worker->submit(value, 0, tuning);
+		result = wait_for(sequence);
+		assert(result && result->visible[0][1] == open_side);
+	}
 	worker->stop();
 
 	const bvh8_data open = test_world({{{10000, 10000, 10000}, {10001, 10000, 10000}, {10000, 10001, 10000}}});
-	assert(worker->start(&open));
+	assert(worker->start(&open, 2));
 	auto smokes = std::make_shared<smoke_snapshot>();
 	smokes->volumes.emplace_back();
 	smokes->volumes.back().age_seconds = 2.0f;
@@ -579,7 +607,7 @@ void test_visibility_worker()
 	value.smoke_available = false;
 	worker->submit(value, 0, tuning);
 	result = wait_for(10);
-	assert(result && result->visible[0][1]);
+	assert(result && result->visible[0][1] && result->visibility_probe_hits != 0);
 	smokes->he_clear_radius_units = 100.0f;
 	smokes->he_clear_seconds = 3.0f;
 	smokes->he_clearance_count = 1;
@@ -596,6 +624,7 @@ void test_visibility_worker()
 	worker->submit(value, 0, tuning);
 	result = wait_for(12);
 	assert(result && !result->visible[0][1]);
+	assert(worker->stats().recent_p95_ms > 0.0 && worker->stats().recent_p99_ms > 0.0);
 	worker->stop();
 }
 
@@ -929,6 +958,99 @@ double benchmark_worker_loop(const bvh8_data &data, const std::string &label)
 			<< " triangles=" << blocked_triangles / blocked_timings.size() << '\n' << std::flush;
 		assert(blocked_pairs == pair_count * blocked_timings.size());
 		assert(blocked_average < 5.0);
+
+		constexpr uint32_t dm_player_count = 32;
+		const auto benchmark_runtime = [&](uint32_t thread_count, bool free_for_all, uint32_t expected_pairs,
+			uint32_t expected_hidden, const char *scenario)
+		{
+			auto worker = std::make_unique<visibility_worker>();
+			assert(worker->start(&data, thread_count));
+			std::array<double, 20> dm_timings {};
+			double dm_active = 0.0;
+			uint64_t dm_probe_hits = 0;
+			uint64_t dm_cache_hits = 0;
+			uint64_t dm_cache_queries = 0;
+			uint64_t dm_triangles = 0;
+			uint64_t dm_draws = 0;
+			uint64_t dm_rects = 0;
+			uint64_t dm_proofs = 0;
+			uint64_t dm_proof_leaves = 0;
+			uint32_t dm_max_proof_leaves = 0;
+			uint64_t dm_cache_saturations = 0;
+			uint64_t dm_cache_compaction_trials = 0;
+			uint64_t dm_cache_compactions = 0;
+			uint64_t dm_cache_compaction_leaves_saved = 0;
+			uint64_t dm_uncached_blocked = 0;
+			for (uint32_t dm_frame = 0; dm_frame < dm_timings.size(); ++dm_frame)
+			{
+				visibility_snapshot snapshot;
+				snapshot.sequence = 1000u + dm_frame;
+				snapshot.captured = std::chrono::steady_clock::now();
+				snapshot.filter_teammates = free_for_all;
+				for (uint32_t index = 0; index < dm_player_count; ++index)
+				{
+					const bool first_half = index < dm_player_count / 2u;
+					const float offset = (static_cast<float>(index % (dm_player_count / 2u)) - 7.5f) * 4.0f;
+					const float motion = std::sin(static_cast<float>(dm_frame) * 0.2f + static_cast<float>(index)) * 2.0f;
+					const vec3 origin = first_half ? vec3 {-1902.0f + offset, -1976.0f + motion, -212.14798f}
+						: vec3 {1376.0f + offset, -16.0f + motion, -103.96875f};
+					player_state &player = snapshot.players[index];
+					player = {true, static_cast<uint8_t>(first_half ? 2 : 3),
+						{origin.x, origin.y, origin.z + 64.0f}, origin,
+						{-16.0f, -16.0f, 0.0f}, {16.0f, 16.0f, 72.0f}, 0.0f, 0.0f,
+						k_visibility_button_forward, weapon_muzzle_class::rifle};
+					set_test_capsules(player);
+				}
+				worker->submit(std::move(snapshot), 0, blocked_tuning);
+				std::shared_ptr<const visibility_result> result;
+				for (int attempt = 0; attempt < 5000 && (!result || result->sequence != 1000u + dm_frame); ++attempt)
+				{
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+					result = worker->result();
+				}
+				assert(result && result->evaluated_pairs == expected_pairs && result->hidden_pairs == expected_hidden
+					&& !result->budget_exhausted);
+				dm_timings[dm_frame] = result->worker_ms;
+				dm_active += result->worker_active_ms;
+				dm_probe_hits += result->visibility_probe_hits;
+				dm_cache_hits += result->occluder_cache_hits;
+				dm_cache_queries += result->occluder_cache_hits + result->occluder_cache_misses;
+				dm_triangles += result->rasterized_triangles;
+				dm_draws += result->moc_render_calls;
+				dm_rects += result->moc_rect_tests;
+				dm_proofs += result->rebuilt_proofs;
+				dm_proof_leaves += result->rebuilt_proof_leaves;
+				dm_max_proof_leaves = std::max(dm_max_proof_leaves, result->max_rebuilt_proof_leaves);
+				dm_cache_saturations += result->cache_saturations;
+				dm_cache_compaction_trials += result->cache_compaction_trials;
+				dm_cache_compactions += result->cache_compactions;
+				dm_cache_compaction_leaves_saved += result->cache_compaction_leaves_saved;
+				dm_uncached_blocked += result->uncached_blocked;
+			}
+			worker->stop();
+			std::sort(dm_timings.begin(), dm_timings.end());
+			double dm_average = 0.0;
+			for (double timing : dm_timings) dm_average += timing;
+			dm_average /= dm_timings.size();
+			std::cout << label << ' ' << scenario << '-' << thread_count << "threads: wall_average=" << dm_average
+				<< "ms wall_p99=" << dm_timings.back() << "ms active_average=" << dm_active / dm_timings.size()
+				<< "ms pairs=" << expected_pairs << " probe_hits=" << dm_probe_hits / dm_timings.size()
+				<< " cache=" << dm_cache_hits / dm_timings.size() << '/' << dm_cache_queries / dm_timings.size()
+				<< " triangles=" << dm_triangles / dm_timings.size()
+				<< " draws=" << dm_draws / dm_timings.size() << " rects=" << dm_rects / dm_timings.size()
+				<< " proofs=" << dm_proofs / dm_timings.size()
+				<< " proof_leaves=" << (dm_proofs == 0 ? 0 : dm_proof_leaves / dm_proofs)
+				<< '/' << dm_max_proof_leaves << " cache_capacity=" << k_capsule_occluder_cache_size
+				<< " saturated=" << dm_cache_saturations / dm_timings.size()
+				<< " compact=" << dm_cache_compactions / dm_timings.size()
+				<< '/' << dm_cache_compaction_trials / dm_timings.size()
+				<< " saved=" << dm_cache_compaction_leaves_saved / dm_timings.size()
+				<< " uncached_blocked=" << dm_uncached_blocked / dm_timings.size() << '\n' << std::flush;
+			assert(dm_timings.back() < 30.0);
+		};
+		benchmark_runtime(1, false, 512, 512, "runtime-16v16-hidden");
+		benchmark_runtime(2, false, 512, 512, "runtime-16v16-hidden");
+		benchmark_runtime(2, true, dm_player_count * (dm_player_count - 1u), 512, "runtime-32ffa-mixed");
 	}
 
 	constexpr uint32_t k_players = 20;

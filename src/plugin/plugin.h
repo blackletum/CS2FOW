@@ -313,6 +313,7 @@ extern CConVar<float> cs2fow_he_clear_radius_units;
 extern CConVar<float> cs2fow_he_clear_seconds;
 extern CConVar<bool> cs2fow_filter_teammates;
 extern CConVar<int> cs2fow_update_interval_ms;
+extern CConVar<int> cs2fow_worker_threads;
 extern CConVar<float> cs2fow_shoulder_base_units;
 extern CConVar<float> cs2fow_shoulder_rtt_scale;
 extern CConVar<float> cs2fow_max_shoulder_units;

@@ -145,6 +145,7 @@ CConVar<float> cs2fow_he_clear_seconds("cs2fow_he_clear_seconds", FCVAR_NONE, "H
 	true, 0.0f, true, 10.0f, on_cs2fow_float_changed);
 CConVar<bool> cs2fow_filter_teammates("cs2fow_filter_teammates", FCVAR_NONE, "Apply visibility filtering to teammates", false, on_cs2fow_enable_changed);
 CConVar<int> cs2fow_update_interval_ms("cs2fow_update_interval_ms", FCVAR_NONE, "Visibility worker update interval", 1, true, 1, true, 100);
+CConVar<int> cs2fow_worker_threads("cs2fow_worker_threads", FCVAR_NONE, "Visibility worker thread count (applies on map activation)", 2, true, 1, true, 4);
 CConVar<float> cs2fow_shoulder_base_units("cs2fow_shoulder_base_units", FCVAR_NONE, "Minimum sideways shoulder origin distance", 48.0f, true, 0.0f, true, 256.0f);
 CConVar<float> cs2fow_shoulder_rtt_scale("cs2fow_shoulder_rtt_scale", FCVAR_NONE, "Sideways shoulder units per RTT millisecond, applied in 25 ms steps", 0.4f, true, 0.0f, true, 4.0f);
 CConVar<float> cs2fow_max_shoulder_units("cs2fow_max_shoulder_units", FCVAR_NONE, "Maximum sideways shoulder origin distance", 128.0f, true, 0.0f, true, 256.0f);
@@ -613,9 +614,9 @@ void plugin::activate(bvh8_data data)
 	worker_.stop();
 	reset_transmit_state();
 	data_ = std::move(data);
-	if (!worker_.start(&data_))
+	if (!worker_.start(&data_, static_cast<uint32_t>(cs2fow_worker_threads.Get())))
 	{
-		disable("could not start visibility worker thread");
+		disable("could not start visibility worker threads");
 		return;
 	}
 	disabled_reason_.clear();
@@ -923,11 +924,23 @@ void plugin::print_status() const
 		disabled_reason_.empty() && cs2fow_enable.Get() ? "active" : (disabled_reason_.empty() ? "disabled by convar" : disabled_reason_.c_str()), map_.c_str(),
 		data_.header.source_crc32, data_.header.version, data_.header.triangle_count, data_.header.node_count, data_.header.packet_count,
 		static_cast<unsigned long long>(data_.header.file_size), data_.header.max_depth);
-	META_CONPRINTF("[CS2FOW] worker latest=%.3fms average=%.3fms maximum=%.3fms snapshot_age=%.1fms pairs=%u visible=%u hidden=%u pixels=%u rays=%u nodes=%u triangles=%u budget=%llu cycles=%llu\n",
-		stats.latest_ms, stats.average_ms, stats.maximum_ms, age_ms, stats.evaluated_pairs, stats.visible_pairs, stats.hidden_pairs,
-		stats.sampled_pixels, stats.traced_rays, stats.visited_nodes, stats.rasterized_triangles,
+	META_CONPRINTF("[CS2FOW] worker threads=%u wall=%.3fms active=%.3fms recent_p95=%.3fms recent_p99=%.3fms lifetime_average=%.3fms maximum=%.3fms snapshot_age=%.1fms\n",
+		stats.thread_count, stats.latest_ms, stats.latest_active_ms, stats.recent_p95_ms, stats.recent_p99_ms,
+		stats.average_ms, stats.maximum_ms, age_ms);
+	META_CONPRINTF("[CS2FOW] workload pairs=%u visible=%u hidden=%u hold=%u pixels=%u rays=%u probes=%u/%u nodes=%u triangles=%u cache=%u/%u budget=%llu cycles=%llu\n",
+		stats.evaluated_pairs, stats.visible_pairs, stats.hidden_pairs, stats.hold_reuses,
+		stats.sampled_pixels, stats.traced_rays,
+		stats.visibility_probe_hits, stats.visibility_probe_rays, stats.visited_nodes, stats.rasterized_triangles,
+		stats.occluder_cache_hits, stats.occluder_cache_hits + stats.occluder_cache_misses,
 		static_cast<unsigned long long>(stats.budget_exhaustions),
 		static_cast<unsigned long long>(stats.cycles));
+	const double average_proof_leaves = stats.rebuilt_proofs == 0 ? 0.0
+		: static_cast<double>(stats.rebuilt_proof_leaves) / static_cast<double>(stats.rebuilt_proofs);
+	META_CONPRINTF("[CS2FOW] MOC draws=%u rects=%u proofs=%u proof_leaves=%.1f/%u cache_capacity=%u saturated=%u compact=%u/%u saved=%u uncached_blocked=%u\n",
+		stats.moc_render_calls, stats.moc_rect_tests, stats.rebuilt_proofs, average_proof_leaves,
+		stats.max_rebuilt_proof_leaves, k_capsule_occluder_cache_size,
+		stats.cache_saturations, stats.cache_compactions, stats.cache_compaction_trials,
+		stats.cache_compaction_leaves_saved, stats.uncached_blocked);
 	META_CONPRINTF("[CS2FOW] capture latest=%.3fms average=%.3fms maximum=%.3fms calls=%llu\n",
 		capture_timing.latest_ms, capture_timing.average_ms(), capture_timing.maximum_ms,
 		static_cast<unsigned long long>(capture_timing.calls));

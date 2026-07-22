@@ -315,23 +315,28 @@ bool plugin::capture_smokes(const std::array<CEntityInstance *, k_max_smoke_volu
 	{
 		return false;
 	}
-	auto snapshot = std::make_shared<smoke_snapshot>();
-	snapshot->he_clear_radius_units = cs2fow_he_clear_radius_units.Get();
-	snapshot->he_clear_seconds = cs2fow_he_clear_seconds.Get();
-	if (snapshot->he_clear_radius_units > 0.0f && snapshot->he_clear_seconds > 0.0f)
+	smoke_snapshot snapshot;
+	snapshot.he_clear_radius_units = cs2fow_he_clear_radius_units.Get();
+	snapshot.he_clear_seconds = cs2fow_he_clear_seconds.Get();
+	if (snapshot.he_clear_radius_units > 0.0f && snapshot.he_clear_seconds > 0.0f)
 	{
 		std::lock_guard<std::mutex> lock(transmit_state_mutex_);
 		for (uint32_t index = 0; index < he_clearance_history_.count; ++index)
 		{
 			const live_he_clearance &clearance = he_clearance_history_.records[index];
 			const float age = game_time - clearance.detonation_time;
-			if (age >= 0.0f && age < snapshot->he_clear_seconds)
+			if (age >= 0.0f && age < snapshot.he_clear_seconds)
 			{
-				snapshot->he_clearances[snapshot->he_clearance_count++] = {clearance.center, age, clearance.detonation_time};
+				snapshot.he_clearances[snapshot.he_clearance_count++] = {clearance.center, age, clearance.detonation_time};
 			}
 		}
 	}
-	snapshot->volumes.reserve(count);
+	if (count == 0 && snapshot.he_clearance_count == 0)
+	{
+		value.smokes.reset();
+		return true;
+	}
+	snapshot.volumes.reserve(count);
 	for (size_t index = 0; index < count; ++index)
 	{
 		CEntityInstance *entity = entities[index];
@@ -343,15 +348,15 @@ bool plugin::capture_smokes(const std::array<CEntityInstance *, k_max_smoke_volu
 		const vec3 center = to_vec3(field<Vector>(volume, smoke_layout_.center));
 		const float start_time = field<float>(volume, smoke_layout_.start_time);
 		const auto *storage = field<std::byte *>(volume, smoke_layout_.storage);
-		snapshot->volumes.emplace_back();
-		if (!copy_stable_smoke_frame(storage, center, game_time - start_time, snapshot->volumes.back(),
+		snapshot.volumes.emplace_back();
+		if (!copy_stable_smoke_frame(storage, center, game_time - start_time, snapshot.volumes.back(),
 			[&] { return field<int32_t>(volume, smoke_layout_.frame); }))
 		{
 			return false;
 		}
-		snapshot->volumes.back().start_time = start_time;
+		snapshot.volumes.back().start_time = start_time;
 	}
-	value.smokes = std::move(snapshot);
+	value.smokes = std::make_shared<smoke_snapshot>(std::move(snapshot));
 	return true;
 }
 

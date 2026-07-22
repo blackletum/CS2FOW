@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.2.7-preview
+## 0.3.0
 
 - Replaced the fifteen hand-tuned runtime LOS dots and eight AABB corners with Valve's nineteen live animated hitbox capsules. Visibility now evaluates the capsule silhouette through a bounded CPU depth buffer, preserves the muzzle/smoke/HE rules, and fails open on invalid capture, uncertainty, or a 75 ms worker budget.
+- Added a configurable 1-4-thread visibility pool (two by default), fair budget rotation, a safe visible-ray prepass, reveal-hold reuse, and a larger verified occluder cache that compacts proven blocker sets for 32-player servers. Status now separates wall latency from aggregate worker activity and reports recent tail latency, prepass, hold, and cache behavior.
 
 ## 0.2.6-preview
 
