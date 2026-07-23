@@ -365,6 +365,9 @@ void test_visibility_sampling()
 	target.mins = {-16, -16, 0};
 	target.maxs = {16, 16, 72};
 	target.muzzle_class = weapon_muzzle_class::rifle;
+	const auto aabb = visibility_aabb_points(target);
+	assert(aabb.size() == 8 && aabb.front().x == -32.0f && aabb.front().z == 0.0f
+		&& aabb.back().x == 32.0f && aabb.back().z == 76.0f);
 	vec3 muzzle;
 	assert(visibility_muzzle_point(target, muzzle));
 	assert(std::fabs(muzzle.x - 36.0f) < 0.01f && std::fabs(muzzle.y) < 0.01f
@@ -495,7 +498,7 @@ void test_visibility_worker()
 	visibility_snapshot value;
 	value.sequence = 1;
 	value.players[0] = {true, 2, {0, 0, 64}, {0, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
-	value.players[1] = {true, 3, {64, 0, 64}, {64, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
+	value.players[1] = {true, 3, {80, 0, 64}, {80, 0, 0}, {-16, -16, 0}, {16, 16, 72}};
 	set_test_capsules(value.players[0]);
 	set_test_capsules(value.players[1]);
 	const visibility_tuning tuning {48.0f, 0.4f, 128.0f};
@@ -526,8 +529,8 @@ void test_visibility_worker()
 	assert(result && result->visible[0][1]);
 
 	value.sequence = 3;
-	value.players[1].eye.x = 64;
-	value.players[1].origin.x = 64;
+	value.players[1].eye.x = 80;
+	value.players[1].origin.x = 80;
 	set_test_capsules(value.players[1]);
 	worker->submit(value, 100, tuning);
 	result = wait_for(3);
@@ -556,8 +559,8 @@ void test_visibility_worker()
 	{
 		const bool open_side = (sequence & 1u) == 0u;
 		value.sequence = sequence;
-		value.players[1].eye.x = open_side ? 16.0f : 64.0f;
-		value.players[1].origin.x = open_side ? 16.0f : 64.0f;
+		value.players[1].eye.x = open_side ? 16.0f : 80.0f;
+		value.players[1].origin.x = open_side ? 16.0f : 80.0f;
 		set_test_capsules(value.players[1]);
 		worker->submit(value, 0, tuning);
 		result = wait_for(sequence);

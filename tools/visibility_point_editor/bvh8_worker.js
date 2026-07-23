@@ -73,7 +73,7 @@ self.addEventListener("message", (event) =>
 			const caches = Array.isArray(cachedPackets) ? cachedPackets : [];
 			const deadline = (globalThis.performance?.now?.() ?? Date.now()) + 75;
 			const results = targetSets.map((target, index) => trace_capsule_target(map, message.viewer, target,
-				{cache: caches[index], deadline, debug: true}));
+				{cache: caches[index], deadline, debug: true, targetOrigin: target?.pose}));
 			cachedPackets = results.map((result) => result.cache);
 			const transfer = [];
 			for (const result of results)

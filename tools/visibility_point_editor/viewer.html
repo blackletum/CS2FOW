@@ -797,7 +797,7 @@
 							<option value="idle">Standing idle</option>
 						</select>
 					</label>
-					<p class="hint">The list follows the selected weapon. Preview cross-fades real SAS movement, crouch, jump, fire, and reload clips while all 15 markers follow the bones.</p>
+					<p class="hint">The list follows the selected weapon. Preview cross-fades exported SAS clips while capsules follow their bones; live CS2 aim layers and IK exist only in the game.</p>
 				</div>
 				<div class="section-block">
 					<h2>Visibility</h2>
@@ -839,11 +839,12 @@
 					<label class="field"><span>Bot weapon</span>
 						<select id="bot-weapon-select">
 							<option value="usp_silencer">USP-S</option>
+							<option value="smg">SMG class (28u)</option>
 							<option value="m4a1_silencer" selected>M4A1-S</option>
 							<option value="awp">AWP</option>
 						</select>
 					</label>
-					<p class="hint">The roaming bot carries this independently. It never shoots.</p>
+					<p class="hint">The roaming bot carries this independently. SMG exposes the runtime's 28-unit muzzle class without a local weapon model. It never shoots.</p>
 				</div>
 				<div class="section-block">
 					<h2>Position</h2>
@@ -874,7 +875,7 @@
 			<section class="inspector-panel" data-scene-panel="bounds" hidden>
 				<div class="section-block">
 					<h2>Collision bounds</h2>
-					<p class="hint">Eight AABB fallback points come from these bounds. They are visual context and are not exported.</p>
+					<p class="hint">Eight runtime AABB fallback points come from these bounds. They use 16-unit side and 4-unit top padding and are not exported.</p>
 					<h2>Minimum</h2>
 					<div class="grid-3">
 						<label class="field"><span>X</span><input id="min-x" type="number" value="-16" step="1"></label>
@@ -931,8 +932,11 @@
 						<label class="field"><span>Shoulder max</span><input id="shoulder-max" type="number" min="0" max="256" step="1" value="128"></label>
 					</div>
 					<div class="grid-3">
+						<label class="field"><span>Reveal hold ms</span><input id="visibility-hold-ms" type="number" min="0" max="1000" step="1" value="47"></label>
 						<label class="field"><span>HE radius</span><input id="he-clear-radius" type="number" min="0" max="320" step="1" value="100"></label>
 						<label class="field"><span>HE seconds</span><input id="he-clear-seconds" type="number" min="0" max="10" step="0.1" value="2.5"></label>
+					</div>
+					<div class="grid-3">
 						<label class="field"><span>Bot seed</span><input id="simulation-seed" type="number" step="1" value="1337"></label>
 					</div>
 					<div class="input-buttons" role="group" aria-label="Viewer movement input">
@@ -945,7 +949,7 @@
 				<div class="section-block">
 					<h2>FPS test range</h2>
 					<label class="field"><span>Mouse sensitivity <output id="mouse-sensitivity-value">0.94</output></span><input id="mouse-sensitivity" type="range" min="0.1" max="3" step="0.01" value="0.94"></label>
-					<p class="hint">Enter Play after both players are placed. Real mode hides the bot; V exposes all wall and smoke evidence.</p>
+					<p class="hint">Enter Play after both players are placed. Runtime LOS mode hides the bot under stable transmit conditions; V exposes all wall and synthetic-smoke evidence.</p>
 				</div>
 				<div class="section-block">
 					<h2>Map display</h2>
@@ -983,9 +987,9 @@
 	<div id="play-hud" class="play-hud" hidden aria-live="polite">
 		<div class="crosshair" aria-hidden="true"></div>
 		<div class="play-card">
-			<div class="label">Visibility gate · <span id="play-bot-count">0/3 bots visible</span></div>
+			<div class="label">Runtime LOS preview · <span id="play-bot-count">0/3 bots visible</span></div>
 			<div class="play-gate-line">Bots <span id="play-result" class="play-result">0/3 visible</span> · <span id="play-rays">0/0</span> sampled pixels/exact rays · <span id="play-blocker">waiting</span></div>
-			<div class="play-gate-meta">Smoke <span id="play-smokes">0</span> · HE <span id="play-hes">0</span> · <span id="play-debug-state">Real</span> · <span id="play-view">First person</span></div>
+			<div class="play-gate-meta">Synthetic smoke <span id="play-smokes">0</span> · HE <span id="play-hes">0</span> · <span id="play-debug-state">Runtime LOS</span> · <span id="play-view">First person</span></div>
 			<div id="play-bvh" class="play-bvh">BVH traversal appears in Debug mode.</div>
 		</div>
 		<div class="play-weapon-hud">

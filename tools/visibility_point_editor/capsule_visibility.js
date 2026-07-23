@@ -5,6 +5,7 @@
 export const VISIBILITY_CAPSULE_COUNT = 19;
 export const VISIBILITY_GRID_SIZE = 32;
 export const VISIBILITY_CAPSULE_FLOATS = VISIBILITY_CAPSULE_COUNT * 7;
+export const VISIBILITY_OCCLUDER_CACHE_SIZE = 96;
 
 const PIXEL_COUNT = VISIBILITY_GRID_SIZE ** 2;
 const EPSILON = 1.0e-5;
@@ -80,7 +81,7 @@ function ray_capsule(origin, direction, capsule)
 	return Math.min(startDistance, endDistance);
 }
 
-function read_capsules(values)
+function read_capsules(values, targetOrigin)
 {
 	if (!(values instanceof Float32Array) || values.length !== VISIBILITY_CAPSULE_FLOATS) return null;
 	const capsules = [];
@@ -92,7 +93,9 @@ function read_capsules(values)
 			radius: values[index + 6]
 		};
 		if (!finite_vec(capsule.start) || !finite_vec(capsule.end)
-			|| !Number.isFinite(capsule.radius) || capsule.radius <= 0) return null;
+			|| !Number.isFinite(capsule.radius) || capsule.radius <= 0 || capsule.radius > 32
+			|| targetOrigin && (length_sq(subtract(capsule.start, targetOrigin)) > 128 ** 2
+				|| length_sq(subtract(capsule.end, targetOrigin)) > 128 ** 2)) return null;
 		capsules.push(capsule);
 	}
 	return capsules;
@@ -268,7 +271,7 @@ function raster_map(map, view, projections, deadline, depth, traversal, stats, p
 			return true;
 		});
 	};
-	const cached = Array.isArray(previousCache) ? previousCache.slice(0, 8) : [];
+	const cached = Array.isArray(previousCache) ? previousCache.slice(0, VISIBILITY_OCCLUDER_CACHE_SIZE) : [];
 	if (cached.length && typeof map.for_each_packet_triangle === "function")
 	{
 		let valid = true;
@@ -286,13 +289,34 @@ function raster_map(map, view, projections, deadline, depth, traversal, stats, p
 		depth.fill(0);
 	}
 	const candidate = [];
+	let traversedLeaves = 0;
 	let occluded = false;
 	const complete = map.for_each_triangle_in_view(view, raster, traversal, stats, (packet) =>
 	{
-		if (candidate.length < 8) candidate.push(packet);
+		++traversedLeaves;
+		if (candidate.length < VISIBILITY_OCCLUDER_CACHE_SIZE) candidate.push(packet);
 		occluded = all_projections_occluded(projections, depth);
 		return !occluded;
 	});
+	if (occluded && traversedLeaves <= VISIBILITY_OCCLUDER_CACHE_SIZE && candidate.length > 1)
+	{
+		for (let suffixCount = 1; suffixCount < candidate.length; suffixCount *= 2)
+		{
+			if (now_ms() >= deadline) break;
+			depth.fill(0);
+			let valid = true;
+			for (const packet of candidate.slice(-suffixCount))
+			{
+				if (!map.for_each_packet_triangle(packet, raster, traversal))
+				{
+					valid = false;
+					break;
+				}
+			}
+			if (valid && all_projections_occluded(projections, depth))
+				return {complete: true, occluded: true, cache: candidate.slice(-suffixCount)};
+		}
+	}
 	return {complete: complete || occluded, occluded,
 		cache: occluded ? candidate : complete ? [] : cached};
 }
@@ -393,7 +417,7 @@ export function capsule_visible_from_origin(map, origin, capsuleValues, options 
 	const stats = {sampledPixels: 0, tracedRays: 0, visitedNodes: 0, rasterizedTriangles: 0};
 	const rays = [];
 	const blocked = [];
-	const capsules = read_capsules(capsuleValues);
+	const capsules = read_capsules(capsuleValues, finite_vec(options.targetOrigin || {}) ? options.targetOrigin : null);
 	if (!capsules || !finite_vec(origin)) return {result: "indeterminate", stats, rays, blocked};
 	const body = {min: {x: Infinity, y: Infinity, z: Infinity}, max: {x: -Infinity, y: -Infinity, z: -Infinity}};
 	for (const capsule of capsules)

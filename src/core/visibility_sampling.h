@@ -13,9 +13,11 @@ namespace cs2fow
 
 inline constexpr uint32_t k_visibility_origin_count_max = 6;
 inline constexpr uint32_t k_visibility_capsule_count = 19;
+inline constexpr uint32_t k_visibility_aabb_point_count = 8;
 inline constexpr uint32_t k_visibility_pixel_grid_size = 32;
 inline constexpr uint32_t k_visibility_pixel_count = k_visibility_pixel_grid_size * k_visibility_pixel_grid_size;
-inline constexpr uint32_t k_visibility_debug_beam_count_max = k_visibility_capsule_count + 1;
+inline constexpr uint32_t k_visibility_debug_beam_count_max =
+	k_visibility_capsule_count + 1 + k_visibility_aabb_point_count;
 
 inline constexpr uint64_t k_visibility_button_forward = 0x8;
 inline constexpr uint64_t k_visibility_button_back = 0x10;
@@ -90,5 +92,6 @@ bool valid_visibility_capsule(const visibility_capsule &capsule);
 visibility_origin_points visibility_origins(const bvh8_data &data, const visibility_player &player,
 	const visibility_tuning &tuning);
 bool visibility_muzzle_point(const visibility_player &player, vec3 &point);
+std::array<vec3, k_visibility_aabb_point_count> visibility_aabb_points(const visibility_player &player);
 
 } // namespace cs2fow

@@ -25,8 +25,8 @@ const k_viewer_distance = 256;
 const k_eye_height = 64;
 const k_shoulder_offset = 48;
 const k_vertical_origin_offset = 16;
-const k_horizontal_bounds_padding = 8;
-const k_top_bounds_padding = 8;
+const k_horizontal_bounds_padding = 16;
+const k_top_bounds_padding = 4;
 const k_aabb_dot_radius = 0.022 / 3.0;
 const k_body_dot_radius = 0.06 / 3.0;
 const k_selected_dot_radius = 0.088 / 3.0;
@@ -512,12 +512,13 @@ function generated_aabb_points()
 	];
 }
 
-function target_aabb_points()
+function target_aabb_points(pose = target_pose)
 {
 	return generated_aabb_points().map((point, index) => ({
-		x: point.x + target_pose.x,
-		y: point.y + target_pose.y,
-		z: (play_active && index >= 4 ? target_pose.height + k_top_bounds_padding : point.z) + target_pose.z
+		x: point.x + pose.x,
+		y: point.y + pose.y,
+		z: (play_active && index >= 4 && Number.isFinite(pose.height)
+			? pose.height + k_top_bounds_padding : point.z) + pose.z
 	}));
 }
 
@@ -720,21 +721,32 @@ function muzzle_values(pose, actor)
 	return muzzle ? new Float32Array([muzzle.x, muzzle.y, muzzle.z]) : null;
 }
 
+function aabb_values(pose)
+{
+	const values = new Float32Array(24);
+	target_aabb_points(pose).forEach((point, index) => values.set([point.x, point.y, point.z], index * 3));
+	return values;
+}
+
 function runtime_target_snapshot()
 {
-	return {capsules: capsule_values(model, hitbox_bindings), muzzle: muzzle_values(target_pose, play_state?.bots?.[0])};
+	return {capsules: capsule_values(model, hitbox_bindings), aabb: aabb_values(target_pose),
+		muzzle: muzzle_values(target_pose, play_state?.bots?.[0]),
+		pose: {x: target_pose.x, y: target_pose.y, z: target_pose.z, yaw: target_pose.yaw}};
 }
 
 function extra_runtime_target_snapshot(index)
 {
 	const pose = play_active ? extra_bot_render_poses[index] : extra_target_poses[index];
-	return {capsules: capsule_values(extra_bot_models[index], extra_bot_capsule_bindings[index]),
-		muzzle: muzzle_values(pose, play_state?.bots?.[index + 1])};
+	return {capsules: capsule_values(extra_bot_models[index], extra_bot_capsule_bindings[index]), aabb: aabb_values(pose),
+		muzzle: muzzle_values(pose, play_state?.bots?.[index + 1]),
+		pose: {x: pose.x, y: pose.y, z: pose.z, yaw: pose.yaw}};
 }
 
 function target_transfer_list(targetSets)
 {
-	return targetSets.flatMap((target) => [target.capsules.buffer, ...(target.muzzle ? [target.muzzle.buffer] : [])]);
+	return targetSets.flatMap((target) => [target.capsules.buffer, target.aabb.buffer,
+		...(target.muzzle ? [target.muzzle.buffer] : [])]);
 }
 
 function request_map_trace()
@@ -1266,7 +1278,7 @@ function update_status()
 	$("animation-clip").disabled = !bindingsReady;
 	$("runtime-animation").disabled = !bindingsReady;
 	for (const id of ["viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max",
-		"he-clear-radius", "he-clear-seconds", "simulation-seed", "bot-weapon-select"])
+		"visibility-hold-ms", "he-clear-radius", "he-clear-seconds", "simulation-seed", "bot-weapon-select"])
 	{
 		$(id).disabled = play_active;
 	}
@@ -2012,7 +2024,7 @@ function update_play_visibility()
 	$("play-result").classList.toggle("partial", visibleBots > 0 && visibleBots < totalBots);
 	$("play-result").classList.toggle("visible", visibleBots === totalBots);
 	$("play-result").textContent = `${visibleBots}/${totalBots} visible`;
-	$("play-debug-state").textContent = play_debug ? `Debug · Rays ${play_rays_enabled ? "on" : "off"}` : "Real";
+	$("play-debug-state").textContent = play_debug ? `Debug · Rays ${play_rays_enabled ? "on" : "off"}` : "Runtime LOS";
 	$("play-view").textContent = play_third_person ? "Third person" : "First person";
 }
 
@@ -2900,6 +2912,7 @@ async function enter_play_mode()
 			tuning,
 			heRadius: read_number("he-clear-radius"),
 			heSeconds: read_number("he-clear-seconds"),
+			visibilityHoldMs: read_number("visibility-hold-ms"),
 			seed: read_number("simulation-seed"),
 			botMuzzleLength: weapon_muzzle_length(botKey),
 			playerSpeed: k_weapon_stats[play_weapon_key].speed,
@@ -3872,7 +3885,7 @@ function install_ui()
 			});
 		}
 	}
-	for (const id of ["viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "he-clear-radius", "he-clear-seconds", "simulation-seed"])
+	for (const id of ["viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "visibility-hold-ms", "he-clear-radius", "he-clear-seconds", "simulation-seed"])
 	{
 		$(id).addEventListener("input", () =>
 		{
@@ -4529,7 +4542,7 @@ function run_self_checks()
 	};
 	expect(default_points.length === 15, "default body point count");
 	expect(generated_aabb_points().length === 8, "AABB fallback count");
-	expect(generated_aabb_points()[0].x === -24 && generated_aabb_points()[7].z === 80, "runtime AABB padding");
+	expect(generated_aabb_points()[0].x === -32 && generated_aabb_points()[7].z === 76, "runtime AABB padding");
 	const viewer_origins = stationary_viewer_origins();
 	expect(viewer_origins.length === 5 && viewer_origins[0].x === 256, "fixed viewer origins");
 	expect(new Set(viewer_origins.map((point) => `${point.x},${point.y},${point.z}`)).size === 5, "stationary origins are unique");
@@ -4562,7 +4575,7 @@ function run_self_checks()
 	update_status();
 	expect($("points-list").querySelectorAll('[role="option"]').length === 15, "point list count");
 	expect($("point-name").value === points[selected_index]?.name, "selected point synchronization");
-	for (const id of ["load-sas", "import-los", "export-toggle", "animation-clip", "runtime-animation", "edit-mode", "play-mode", "points-list", "point-name", "inspector", "points-disclosure", "metrics-hud", "state-hud", "play-hud", "play-result", "play-rays", "play-smokes", "play-hes", "play-bot-count", "play-debug-state", "play-view", "play-blocker", "play-bvh", "player-primary-select", "load-map", "reload-mirage", "unload-map", "place-target", "place-viewer", "viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "he-clear-radius", "he-clear-seconds", "simulation-seed", "mouse-sensitivity", "map-opacity", "map-focus", "map-wireframe", "frame-map", "frame-players", "hitbox-capsules"])
+	for (const id of ["load-sas", "import-los", "export-toggle", "animation-clip", "runtime-animation", "edit-mode", "play-mode", "points-list", "point-name", "inspector", "points-disclosure", "metrics-hud", "state-hud", "play-hud", "play-result", "play-rays", "play-smokes", "play-hes", "play-bot-count", "play-debug-state", "play-view", "play-blocker", "play-bvh", "player-primary-select", "load-map", "reload-mirage", "unload-map", "place-target", "place-viewer", "viewer-ping", "shoulder-base", "shoulder-rtt-scale", "shoulder-max", "visibility-hold-ms", "he-clear-radius", "he-clear-seconds", "simulation-seed", "mouse-sensitivity", "map-opacity", "map-focus", "map-wireframe", "frame-map", "frame-players", "hitbox-capsules"])
 	{
 		expect(Boolean($(id)), `redesigned control: ${id}`);
 	}

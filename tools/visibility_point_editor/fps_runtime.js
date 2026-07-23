@@ -2,7 +2,8 @@
 // synthetic smoke inputs, and the same wall/smoke visibility decision as CS2FOW.
 
 import {runtime_origins, BVH8_INVALID_REF} from "./bvh8.js";
-import {capsule_visible_from_origin, VISIBILITY_CAPSULE_FLOATS} from "./capsule_visibility.js";
+import {capsule_visible_from_origin, VISIBILITY_CAPSULE_FLOATS,
+	VISIBILITY_OCCLUDER_CACHE_SIZE} from "./capsule_visibility.js";
 
 export const FPS_TICK_RATE = 64;
 export const FPS_DT = 1 / FPS_TICK_RATE;
@@ -692,7 +693,8 @@ function target_world_point(bot, point)
 
 export function weapon_muzzle_length(key)
 {
-	return key === "usp_silencer" ? 18 : key === "m4a1_silencer" ? 36 : key === "awp" ? 52 : 0;
+	return key === "usp_silencer" || key === "pistol" ? 18 : key === "smg" ? 28
+		: key === "m4a1_silencer" || key === "rifle" ? 36 : key === "awp" || key === "sniper" ? 52 : 0;
 }
 
 export function target_muzzle(bot, muzzleLength)
@@ -700,12 +702,27 @@ export function target_muzzle(bot, muzzleLength)
 	return muzzleLength > 0 ? target_world_point(bot, [muzzleLength, 0, 60]) : null;
 }
 
+export function target_aabb(bot)
+{
+	const height = target_height(bot);
+	return new Float32Array([
+		bot.origin.x - 32, bot.origin.y - 32, bot.origin.z,
+		bot.origin.x + 32, bot.origin.y - 32, bot.origin.z,
+		bot.origin.x - 32, bot.origin.y + 32, bot.origin.z,
+		bot.origin.x + 32, bot.origin.y + 32, bot.origin.z,
+		bot.origin.x - 32, bot.origin.y - 32, bot.origin.z + height + 4,
+		bot.origin.x + 32, bot.origin.y - 32, bot.origin.z + height + 4,
+		bot.origin.x - 32, bot.origin.y + 32, bot.origin.z + height + 4,
+		bot.origin.x + 32, bot.origin.y + 32, bot.origin.z + height + 4
+	]);
+}
+
 export function default_targets(bot, muzzleLength = 0)
 {
 	const height = target_height(bot);
 	const local = [
-		[-24, -24, 0], [24, -24, 0], [-24, 24, 0], [24, 24, 0],
-		[-24, -24, height + 8], [24, -24, height + 8], [-24, 24, height + 8], [24, 24, height + 8],
+		[-32, -32, 0], [32, -32, 0], [-32, 32, 0], [32, 32, 0],
+		[-32, -32, height + 4], [32, -32, height + 4], [-32, 32, height + 4], [32, 32, height + 4],
 		...NATIVE_BODY_POINTS
 	];
 	if (muzzleLength > 0) local.push([muzzleLength, 0, 60]);
@@ -720,11 +737,55 @@ export function default_targets(bot, muzzleLength = 0)
 	return values;
 }
 
-function valid_target_set(value)
+function valid_target_set(value, targetOrigin = null)
 {
-	return value && value.capsules instanceof Float32Array
-		&& value.capsules.length === VISIBILITY_CAPSULE_FLOATS
-		&& (value.muzzle == null || value.muzzle instanceof Float32Array && value.muzzle.length === 3);
+	if (!value || !(value.capsules instanceof Float32Array)
+		|| value.capsules.length !== VISIBILITY_CAPSULE_FLOATS
+		|| !(value.aabb instanceof Float32Array) || value.aabb.length !== 24 || !value.aabb.every(Number.isFinite)
+		|| value.muzzle != null && (!(value.muzzle instanceof Float32Array)
+			|| value.muzzle.length !== 3 || !value.muzzle.every(Number.isFinite))
+		|| value.pose != null && (!finite_vec(value.pose) || !Number.isFinite(value.pose.yaw))) return false;
+	for (let index = 0; index < value.capsules.length; index += 7)
+	{
+		const start = {x: value.capsules[index], y: value.capsules[index + 1], z: value.capsules[index + 2]};
+		const end = {x: value.capsules[index + 3], y: value.capsules[index + 4], z: value.capsules[index + 5]};
+		const radius = value.capsules[index + 6];
+		if (!finite_vec(start) || !finite_vec(end) || !Number.isFinite(radius) || radius <= 0 || radius > 32
+			|| targetOrigin && (length_sq(sub(start, targetOrigin)) > 128 ** 2
+				|| length_sq(sub(end, targetOrigin)) > 128 ** 2)) return false;
+	}
+	return true;
+}
+
+function align_target_set(value, actor)
+{
+	if (!value?.pose || !finite_vec(actor) || !Number.isFinite(actor.yaw)) return value;
+	const radians = (actor.yaw - value.pose.yaw) * Math.PI / 180;
+	const cosine = Math.cos(radians);
+	const sine = Math.sin(radians);
+	const transform = (x, y, z) =>
+	{
+		const localX = x - value.pose.x;
+		const localY = y - value.pose.y;
+		return {x: actor.x + cosine * localX - sine * localY,
+			y: actor.y + sine * localX + cosine * localY, z: actor.z + z - value.pose.z};
+	};
+	const capsules = new Float32Array(value.capsules.length);
+	for (let index = 0; index < value.capsules.length; index += 7)
+	{
+		const start = transform(value.capsules[index], value.capsules[index + 1], value.capsules[index + 2]);
+		const end = transform(value.capsules[index + 3], value.capsules[index + 4], value.capsules[index + 5]);
+		capsules.set([start.x, start.y, start.z, end.x, end.y, end.z, value.capsules[index + 6]], index);
+	}
+	const muzzlePoint = value.muzzle && transform(value.muzzle[0], value.muzzle[1], value.muzzle[2]);
+	const aabb = value.aabb.slice();
+	for (let index = 0; index < aabb.length; index += 3)
+	{
+		aabb[index] += actor.x - value.pose.x;
+		aabb[index + 1] += actor.y - value.pose.y;
+		aabb[index + 2] += actor.z - value.pose.z;
+	}
+	return {capsules, aabb, muzzle: muzzlePoint ? new Float32Array([muzzlePoint.x, muzzlePoint.y, muzzlePoint.z]) : null};
 }
 
 export function trace_capsule_target(map, viewer, targetSet, options = {})
@@ -735,10 +796,17 @@ export function trace_capsule_target(map, viewer, targetSet, options = {})
 	origins.forEach((origin, index) => originValues.set([origin.x, origin.y, origin.z], index * 3));
 	const rays = [];
 	const blockedRays = [];
-	const stats = {sampledPixels: 0, tracedRays: 0, visitedNodes: 0, rasterizedTriangles: 0};
+	const stats = {sampledPixels: 0, tracedRays: 0, visitedNodes: 0, rasterizedTriangles: 0,
+		visibilityProbeRays: 0, visibilityProbeHits: 0};
 	const deadline = Number.isFinite(options.deadline) ? options.deadline : (globalThis.performance?.now?.() ?? Date.now()) + 75;
-	const valid = valid_target_set(targetSet);
+	const valid = valid_target_set(targetSet, options.targetOrigin);
 	const muzzle = valid && targetSet.muzzle ? {x: targetSet.muzzle[0], y: targetSet.muzzle[1], z: targetSet.muzzle[2]} : null;
+	const fallbacks = valid ? [
+		...Array.from({length: 8}, (_, index) => ({
+			x: targetSet.aabb[index * 3], y: targetSet.aabb[index * 3 + 1], z: targetSet.aabb[index * 3 + 2]
+		})),
+		...(muzzle ? [muzzle] : [])
+	] : [];
 	const previousCache = options.cache;
 	const previousPackets = previousCache?.packets ?? previousCache;
 	const packets = previousPackets?.length === origins.length
@@ -746,7 +814,13 @@ export function trace_capsule_target(map, viewer, targetSet, options = {})
 	const previousOccluders = previousCache?.occluders;
 	const occluders = Array.from({length: origins.length}, (_, index) =>
 		previousOccluders?.length === origins.length && Array.isArray(previousOccluders[index])
-			? previousOccluders[index].slice(0, 8) : []);
+			? previousOccluders[index].slice(0, VISIBILITY_OCCLUDER_CACHE_SIZE) : []);
+	if (options.held)
+	{
+		return {origins: originValues, rays: new Float32Array(), blocked: new Uint8Array(), clearCount: 0,
+			rawVisible: false, visible: true, held: true, indeterminate: false, wallBlocked: false,
+			smokeBlocked: false, cache: {packets, occluders}, ...stats, traversal: null};
+	}
 	let rawVisible = !valid;
 	let indeterminate = !valid;
 	let wallBlocked = false;
@@ -754,16 +828,59 @@ export function trace_capsule_target(map, viewer, targetSet, options = {})
 	for (let originIndex = 0; valid && !rawVisible && originIndex < origins.length; ++originIndex)
 	{
 		const origin = origins[originIndex];
+		const chest = 4 * 7;
+		const probe = {x: (targetSet.capsules[chest] + targetSet.capsules[chest + 3]) * 0.5,
+			y: (targetSet.capsules[chest + 1] + targetSet.capsules[chest + 4]) * 0.5,
+			z: (targetSet.capsules[chest + 2] + targetSet.capsules[chest + 5]) * 0.5};
+		const probeWall = map.segment_blocked(origin, probe, packets[originIndex], traversal);
+		packets[originIndex] = probeWall.packet;
+		++stats.tracedRays;
+		++stats.visibilityProbeRays;
+		const probeSmokeBlocked = !probeWall.blocked && Boolean(options.smokeBlocked?.(origin, probe));
+		wallBlocked ||= probeWall.blocked;
+		smokeBlocked ||= probeSmokeBlocked;
+		if (options.debug)
+		{
+			rays.push(origin.x, origin.y, origin.z, probe.x, probe.y, probe.z);
+			blockedRays.push(probeWall.blocked ? 1 : probeSmokeBlocked ? 2 : 0);
+		}
+		if (!probeWall.blocked && !probeSmokeBlocked)
+		{
+			rawVisible = true;
+			++stats.visibilityProbeHits;
+			break;
+		}
+		for (const point of fallbacks)
+		{
+			const wall = map.segment_blocked(origin, point, packets[originIndex], traversal);
+			packets[originIndex] = wall.packet;
+			++stats.tracedRays;
+			const fallbackSmokeBlocked = !wall.blocked && Boolean(options.smokeBlocked?.(origin, point));
+			wallBlocked ||= wall.blocked;
+			smokeBlocked ||= fallbackSmokeBlocked;
+			if (options.debug)
+			{
+				rays.push(origin.x, origin.y, origin.z, point.x, point.y, point.z);
+				blockedRays.push(wall.blocked ? 1 : fallbackSmokeBlocked ? 2 : 0);
+			}
+			if (!wall.blocked && !fallbackSmokeBlocked)
+			{
+				rawVisible = true;
+				break;
+			}
+		}
+		if (rawVisible) break;
 		const query = capsule_visible_from_origin(map, origin, targetSet.capsules, {
 			deadline,
 			traversal,
 			debug: Boolean(options.debug),
 			smokeActive: Boolean(options.smokeActive),
 			smokeBlocked: options.smokeBlocked,
+			targetOrigin: options.targetOrigin,
 			occluderCache: occluders[originIndex]
 		});
 		if (Array.isArray(query.occluderCache)) occluders[originIndex] = query.occluderCache;
-		for (const key of Object.keys(stats)) stats[key] += query.stats[key];
+		for (const [key, value] of Object.entries(query.stats)) stats[key] += value;
 		if (options.debug)
 		{
 			rays.push(...query.rays);
@@ -777,19 +894,6 @@ export function trace_capsule_target(map, viewer, targetSet, options = {})
 		}
 		wallBlocked ||= query.reason === "wall";
 		smokeBlocked ||= query.reason === "smoke";
-		if (!muzzle) continue;
-		const wall = map.segment_blocked(origin, muzzle, packets[originIndex], traversal);
-		packets[originIndex] = wall.packet;
-		++stats.tracedRays;
-		const muzzleSmokeBlocked = !wall.blocked && Boolean(options.smokeBlocked?.(origin, muzzle));
-		wallBlocked ||= wall.blocked;
-		smokeBlocked ||= muzzleSmokeBlocked;
-		if (options.debug)
-		{
-			rays.push(origin.x, origin.y, origin.z, muzzle.x, muzzle.y, muzzle.z);
-			blockedRays.push(wall.blocked ? 1 : muzzleSmokeBlocked ? 2 : 0);
-		}
-		if (!wall.blocked && !muzzleSmokeBlocked) rawVisible = true;
 	}
 	const blocked = new Uint8Array(blockedRays);
 	return {
@@ -839,6 +943,8 @@ export class FpsSimulation
 		this.heTuning = {heRadius: settings.heRadius, heSeconds: settings.heSeconds};
 		this.heSeconds = Number.isFinite(Number(settings.heSeconds)) ? clamp(Number(settings.heSeconds), 0, 10) : DEFAULT_HE_SECONDS;
 		this.botMuzzleLength = Math.max(0, Number(settings.botMuzzleLength) || 0);
+		const requestedHold = Number(settings.visibilityHoldMs);
+		this.visibilityHoldSeconds = (Number.isFinite(requestedHold) ? clamp(requestedHold, 0, 1000) : 47) / 1000;
 		this.random = seeded_random(settings.seed);
 		this.debug = false;
 		this.targetSets = [];
@@ -1113,6 +1219,11 @@ export class FpsSimulation
 
 	visibility(bot, botIndex, captureTraversal = false, deadline = Infinity)
 	{
+		const held = this.time < this.revealedUntil[botIndex];
+		const alignedTarget = align_target_set(this.targetSets[botIndex], bot.origin ? {...bot.origin, yaw: bot.yaw} : bot);
+		const liveMuzzle = target_muzzle(bot, this.botMuzzleLength);
+		const targetSet = alignedTarget && {...alignedTarget,
+			muzzle: liveMuzzle ? new Float32Array([liveMuzzle.x, liveMuzzle.y, liveMuzzle.z]) : null};
 		const result = trace_capsule_target(this.map, {
 			origin: this.player.origin,
 			eye: add(this.player.origin, {x: 0, y: 0, z: this.player.crouched ? 28.5 : 64}),
@@ -1120,17 +1231,19 @@ export class FpsSimulation
 			pingMs: this.pingMs,
 			tuning: this.tuning,
 			buttons: this.playerButtons
-		}, this.targetSets[botIndex], {
+		}, targetSet, {
 			captureTraversal,
 			deadline,
 			cache: this.caches[botIndex],
 			debug: this.debug,
+			held,
+			targetOrigin: bot.origin,
 			smokeActive: this.smokes.length !== 0,
 			smokeBlocked: (origin, target) => smoke_line_blocked(this.map, this.smokes, this.clearances,
 				origin, target, this.time, this.smokeCuts, this.heTuning)
 		});
 		this.caches[botIndex] = result.cache;
-		if (result.rawVisible) this.revealedUntil[botIndex] = this.time + 0.016;
+		if (result.rawVisible) this.revealedUntil[botIndex] = this.time + this.visibilityHoldSeconds;
 		result.visible = result.rawVisible || this.time < this.revealedUntil[botIndex];
 		result.held = result.visible && !result.rawVisible;
 		delete result.cache;

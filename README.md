@@ -232,7 +232,7 @@ The debug buffer records only primary bits CS2FOW truly removed. Turning debug o
 | `cs2fow_shoulder_base_units` | `48` | Start the left/right shoulder and movement-intention points this far from the player's eye. |
 | `cs2fow_shoulder_rtt_scale` | `0.4` | Add this many units per millisecond of round-trip ping, updated in 25 ms steps. |
 | `cs2fow_max_shoulder_units` | `128` | Never push those ping-scaled viewing points farther out than this. |
-| `cs2fow_visibility_hold_ms` | `16` | Once a player becomes visible, keep them visible for at least this long to prevent flicker. |
+| `cs2fow_visibility_hold_ms` | `47` | Once a player becomes visible, keep them visible for about three ticks to prevent flicker. |
 | `cs2fow_debug` | `0` | Save evidence about entity bits CS2FOW actually removed. It does not spam the console. |
 
 If you are keeping an older custom config, give it a quick update. Add `sv_enable_donttransmit 0`, both HE-clearance settings, and the three shoulder settings above. Remove the old lookahead, prediction-distance, and peek-margin settings; CS2FOW now uses the player's current movement buttons instead.

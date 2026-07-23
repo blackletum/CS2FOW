@@ -95,6 +95,7 @@ using teleport_entity_fn = void (*)(CEntityInstance *, const Vector *, const QAn
 
 constexpr uint32_t k_los_animated_color = 0x00ff00;
 constexpr uint32_t k_los_muzzle_color = 0x00ffff;
+constexpr uint32_t k_los_aabb_color = 0xffa500;
 constexpr float k_los_beam_half_length = 1.0f;
 constexpr auto k_los_debug_interval = std::chrono::microseconds(15625);
 
@@ -149,10 +150,11 @@ CConVar<int> cs2fow_worker_threads("cs2fow_worker_threads", FCVAR_NONE, "Visibil
 CConVar<float> cs2fow_shoulder_base_units("cs2fow_shoulder_base_units", FCVAR_NONE, "Minimum sideways shoulder origin distance", 48.0f, true, 0.0f, true, 256.0f);
 CConVar<float> cs2fow_shoulder_rtt_scale("cs2fow_shoulder_rtt_scale", FCVAR_NONE, "Sideways shoulder units per RTT millisecond, applied in 25 ms steps", 0.4f, true, 0.0f, true, 4.0f);
 CConVar<float> cs2fow_max_shoulder_units("cs2fow_max_shoulder_units", FCVAR_NONE, "Maximum sideways shoulder origin distance", 128.0f, true, 0.0f, true, 256.0f);
-CConVar<int> cs2fow_visibility_hold_ms("cs2fow_visibility_hold_ms", FCVAR_NONE, "Minimum revealed duration", 16, true, 0, true, 1000);
+CConVar<int> cs2fow_visibility_hold_ms("cs2fow_visibility_hold_ms", FCVAR_NONE, "Minimum revealed duration", 47, true, 0, true, 1000);
 CConVar<bool> cs2fow_debug("cs2fow_debug", FCVAR_NONE, "Enable CS2FOW diagnostic logging", false);
 CConVar<int> cs2fow_debug_los_player("cs2fow_debug_los_player", FCVAR_NONE,
-	"Temporarily draw one 1-based player's live capsule axes and muzzle; 0 removes them", 0, true, 0, true, static_cast<int>(k_max_players));
+	"Temporarily draw one 1-based player's live capsule axes, muzzle, and AABB corners; 0 removes them",
+	0, true, 0, true, static_cast<int>(k_max_players));
 
 CON_COMMAND_F(cs2fow_status, "Report CS2FOW state", FCVAR_NONE)
 {
@@ -813,7 +815,9 @@ void plugin::draw_los_debug(const visibility_snapshot &value)
 		? player.capsule_count : 0u;
 	vec3 muzzle;
 	const bool has_muzzle = visibility_muzzle_point(visibility_sample(player), muzzle);
-	const uint32_t debug_count = capsule_count + static_cast<uint32_t>(has_muzzle);
+	const auto aabb_points = visibility_aabb_points(visibility_sample(player));
+	const uint32_t aabb_start = capsule_count + static_cast<uint32_t>(has_muzzle);
+	const uint32_t debug_count = aabb_start + (capsule_count == 0 ? 0u : k_visibility_aabb_point_count);
 	auto create_entity = reinterpret_cast<create_entity_by_name_fn>(create_entity_by_name_);
 	auto dispatch_spawn = reinterpret_cast<dispatch_spawn_fn>(dispatch_spawn_);
 	auto remove_entity = reinterpret_cast<remove_entity_fn>(remove_entity_);
@@ -829,11 +833,14 @@ void plugin::draw_los_debug(const visibility_snapshot &value)
 		}
 
 		const bool capsule_axis = index < capsule_count;
-		const uint32_t color = capsule_axis ? k_los_animated_color : k_los_muzzle_color;
+		const bool muzzle_axis = !capsule_axis && has_muzzle && index == capsule_count;
+		const vec3 point = muzzle_axis ? muzzle : aabb_points[index - aabb_start];
+		const uint32_t color = capsule_axis ? k_los_animated_color
+			: muzzle_axis ? k_los_muzzle_color : k_los_aabb_color;
 		const vec3 start_point = capsule_axis ? player.capsules[index].start
-			: vec3 {muzzle.x, muzzle.y, muzzle.z - k_los_beam_half_length};
+			: vec3 {point.x, point.y, point.z - k_los_beam_half_length};
 		const vec3 end_point = capsule_axis ? player.capsules[index].end
-			: vec3 {muzzle.x, muzzle.y, muzzle.z + k_los_beam_half_length};
+			: vec3 {point.x, point.y, point.z + k_los_beam_half_length};
 		Vector start(start_point.x, start_point.y, start_point.z);
 		Vector end(end_point.x, end_point.y, end_point.z);
 		if (entity == nullptr)

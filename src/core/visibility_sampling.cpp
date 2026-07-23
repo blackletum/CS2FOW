@@ -19,6 +19,8 @@ constexpr float k_degrees_to_radians = 0.017453292519943295769f;
 constexpr float k_standing_player_height = 72.0f;
 constexpr float k_pelvis_height = 38.0f;
 constexpr float k_muzzle_z = 60.0f;
+constexpr float k_horizontal_bounds_padding = 16.0f;
+constexpr float k_top_bounds_padding = 4.0f;
 
 float distance_sq(vec3 a, vec3 b)
 {
@@ -272,6 +274,21 @@ bool visibility_muzzle_point(const visibility_player &player, vec3 &point)
 	}
 	point = local_to_world(player, {length, 0.0f, k_muzzle_z});
 	return true;
+}
+
+std::array<vec3, k_visibility_aabb_point_count> visibility_aabb_points(const visibility_player &player)
+{
+	const vec3 minimum {player.origin.x + player.mins.x - k_horizontal_bounds_padding,
+		player.origin.y + player.mins.y - k_horizontal_bounds_padding, player.origin.z + player.mins.z};
+	const vec3 maximum {player.origin.x + player.maxs.x + k_horizontal_bounds_padding,
+		player.origin.y + player.maxs.y + k_horizontal_bounds_padding,
+		player.origin.z + player.maxs.z + k_top_bounds_padding};
+	return {{
+		{minimum.x, minimum.y, minimum.z}, {maximum.x, minimum.y, minimum.z},
+		{minimum.x, maximum.y, minimum.z}, {maximum.x, maximum.y, minimum.z},
+		{minimum.x, minimum.y, maximum.z}, {maximum.x, minimum.y, maximum.z},
+		{minimum.x, maximum.y, maximum.z}, {maximum.x, maximum.y, maximum.z}
+	}};
 }
 
 } // namespace cs2fow

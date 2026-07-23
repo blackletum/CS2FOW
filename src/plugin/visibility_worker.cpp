@@ -330,6 +330,7 @@ void visibility_worker::process(job &current, uint32_t worker_index)
 			const visibility_player target_sample = visibility_sample(to);
 			vec3 muzzle;
 			const bool has_muzzle = visibility_muzzle_point(target_sample, muzzle);
+			const auto aabb_points = visibility_aabb_points(target_sample);
 			for (uint32_t origin_index = 0; blocked && origin_index < ray_origins.count; ++origin_index)
 			{
 				const vec3 &origin = ray_origins.points[origin_index];
@@ -344,6 +345,31 @@ void visibility_worker::process(job &current, uint32_t worker_index)
 				{
 					blocked = false;
 					++totals.visibility_probe_hits;
+				}
+				if (!blocked) break;
+				for (const vec3 &point : aabb_points)
+				{
+					const ray_hit hit = segment_blocked(*data_, origin, point, cached_packet);
+					cached_packet = hit.packet_index;
+					++totals.traced_rays;
+					if (!hit.blocked && (active_smokes == nullptr || !smoke_line_blocked(
+						*active_smokes, origin, point, current.smoke_age_advance, data_)))
+					{
+						blocked = false;
+						break;
+					}
+				}
+				if (!blocked) break;
+				if (has_muzzle)
+				{
+					const ray_hit hit = segment_blocked(*data_, origin, muzzle, cached_packet);
+					cached_packet = hit.packet_index;
+					++totals.traced_rays;
+					if (!hit.blocked && (active_smokes == nullptr || !smoke_line_blocked(
+						*active_smokes, origin, muzzle, current.smoke_age_advance, data_)))
+					{
+						blocked = false;
+					}
 				}
 				if (!blocked) break;
 				capsule_occluder_cache &cached_occluders = cached_occluders_[recipient][target][origin_index];
@@ -378,18 +404,6 @@ void visibility_worker::process(job &current, uint32_t worker_index)
 						current.budget_exhausted = true;
 					}
 					break;
-				}
-				if (has_muzzle)
-				{
-					const ray_hit hit = segment_blocked(*data_, origin, muzzle, cached_packet);
-					cached_packet = hit.packet_index;
-					++totals.traced_rays;
-					if (!hit.blocked && (active_smokes == nullptr || !smoke_line_blocked(
-						*active_smokes, origin, muzzle, current.smoke_age_advance, data_)))
-					{
-						blocked = false;
-						break;
-					}
 				}
 			}
 			const auto now = std::chrono::steady_clock::now();
